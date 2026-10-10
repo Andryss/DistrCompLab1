@@ -10,7 +10,7 @@
 /** Проверяет точные строки событий, их порядок в каждом процессе и общие барьеры. */
 static void check_events(const char* path, int children, char started[PROCESS_LIMIT][256]) {
     FILE* file = fopen(path, "r");
-    assert_true(file != NULL);
+    assert_non_null(file);
     int phase[PROCESS_LIMIT] = {0};
     int started_count = 0;
     int done_count = 0;
@@ -61,7 +61,7 @@ static void check_topology(const char* directory, int children) {
     char path[PATH_MAX];
     test_path(path, directory, "pipes.log");
     FILE* file = fopen(path, "r");
-    assert_true(file != NULL);
+    assert_non_null(file);
     int pairs[PROCESS_LIMIT][PROCESS_LIMIT] = {{0}};
     int descriptors[2 * PROCESS_LIMIT * PROCESS_LIMIT];
     int descriptor_count = 0;
@@ -107,7 +107,7 @@ static void check_success(const char* binary, const char* directory, int childre
     char* output = test_stdout();
     test_path(path, directory, "captured.stdout");
     FILE* captured = fopen(path, "w");
-    assert_true(captured != NULL);
+    assert_non_null(captured);
     assert_true(fputs(output, captured) >= 0);
     assert_true(fclose(captured) == 0);
     free(output);
@@ -136,7 +136,7 @@ static void check_arguments(const char* binary) {
         assert_true(errors[0] != '\0');
         free(errors);
         DIR* contents = opendir(directory);
-        assert_true(contents != NULL);
+        assert_non_null(contents);
         struct dirent* entry;
         while ((entry = readdir(contents)) != NULL) {
             assert_true(!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."));

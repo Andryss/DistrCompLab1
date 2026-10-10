@@ -43,7 +43,8 @@ static void collect_sources(const char* directory_path, char sources[64][PATH_MA
 static void compare_files(const char* original, const char* extracted) {
     FILE* first = fopen(original, "rb");
     FILE* second = fopen(extracted, "rb");
-    assert_true(first != NULL && second != NULL);
+    assert_non_null(first);
+    assert_non_null(second);
     int a, b;
     do {
         a = fgetc(first);
@@ -119,7 +120,7 @@ void test_package(const char* repository) {
     assert_true(mkdir(path, 0700) == 0 || errno == EEXIST);
     test_path(path, PA1_BUILD_DIRECTORY, "dist/pa1/a.out");
     FILE* stale = fopen(path, "w");
-    assert_true(stale != NULL);
+    assert_non_null(stale);
     assert_true(fputs("old build artifact", stale) >= 0);
     assert_true(fclose(stale) == 0);
 

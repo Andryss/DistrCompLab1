@@ -20,7 +20,7 @@ static void remove_tree(const char* path) {
     }
 
     DIR* directory = opendir(path);
-    assert_true(directory != NULL);
+    assert_non_null(directory);
     struct dirent* entry;
     while ((entry = readdir(directory)) != NULL) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
@@ -37,7 +37,7 @@ static void remove_tree(const char* path) {
 void test_workspace_open(void) {
     const char* temporary = getenv("TMPDIR");
     test_path(workspace, temporary != NULL ? temporary : "/tmp", "pa1-tests-XXXXXX");
-    assert_true(mkdtemp(workspace) != NULL);
+    assert_non_null(mkdtemp(workspace));
     test_path(stdout_path, workspace, "stdout");
     test_path(stderr_path, workspace, "stderr");
 }
@@ -115,7 +115,7 @@ int test_command(char* const arguments[], const char* directory, int timeout) {
 
 char* test_read_file(const char* path) {
     FILE* file = fopen(path, "rb");
-    assert_true(file != NULL);
+    assert_non_null(file);
     assert_true(fseek(file, 0, SEEK_END) == 0);
     long length = ftell(file);
     assert_true(length >= 0);
