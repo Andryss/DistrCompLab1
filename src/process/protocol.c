@@ -1,12 +1,7 @@
 #include "protocol.h"
 
-/** Формирует строку один раз: её байты будут и в логе, и в сообщении. */
-static int format_message(Message* message, MessageType type, const char* format, ...) {
-    va_list arguments;
-    va_start(arguments, format);
-    int length = vsnprintf(message->s_payload, sizeof(message->s_payload), format, arguments);
-    va_end(arguments);
-
+/** Проверяет результат snprintf и заполняет заголовок готового сообщения. */
+static int prepare_message(Message* message, MessageType type, int length) {
     if (length < 0 || (size_t)length >= sizeof(message->s_payload)) {
         errno = EIO;
         return -1;
@@ -61,8 +56,9 @@ static int log_barrier(const Process* process, const Logs* logs, const char* for
 /** Рассылает STARTED и ожидает запуска всех остальных детей. */
 static int synchronize_start(Process* process, const Logs* logs) {
     Message message;
-    if (format_message(&message, STARTED, log_started_fmt,
-                       (int)process->id, (int)getpid(), (int)getppid()) < 0) {
+    int length = snprintf(message.s_payload, sizeof(message.s_payload), log_started_fmt,
+                          (int)process->id, (int)getpid(), (int)getppid());
+    if (prepare_message(&message, STARTED, length) < 0) {
         return -1;
     }
     if (publish_message(process, logs, &message) < 0) {
@@ -78,7 +74,9 @@ static int synchronize_start(Process* process, const Logs* logs) {
 /** Рассылает DONE и ожидает завершения работы всех остальных детей. */
 static int synchronize_finish(Process* process, const Logs* logs) {
     Message message;
-    if (format_message(&message, DONE, log_done_fmt, (int)process->id) < 0) {
+    int length = snprintf(message.s_payload, sizeof(message.s_payload), log_done_fmt,
+                          (int)process->id);
+    if (prepare_message(&message, DONE, length) < 0) {
         return -1;
     }
     if (publish_message(process, logs, &message) < 0) {

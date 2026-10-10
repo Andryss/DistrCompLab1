@@ -4,7 +4,6 @@
 #include "platform.h"
 #include "pa1.h"
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <unistd.h>
 #include "logging.h"
