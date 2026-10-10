@@ -1,0 +1,13 @@
+Checks: >-
+  -*,
+  clang-analyzer-core.*,clang-analyzer-deadcode.*,clang-analyzer-unix.*,
+  clang-analyzer-valist.*,
+  bugprone-assert-side-effect,bugprone-infinite-loop,
+  bugprone-misplaced-widening-cast,bugprone-sizeof-expression,
+  bugprone-suspicious-memory-comparison,bugprone-suspicious-memset-usage,
+  bugprone-suspicious-semicolon,bugprone-multiple-statement-macro,
+  misc-redundant-expression,readability-braces-around-statements,
+  readability-misleading-indentation
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(^|/)(src/(main\.h|process/.*|ipc/.*|utils/.*)|tests/.*)$'
+FormatStyle: none

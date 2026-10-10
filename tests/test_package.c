@@ -60,7 +60,9 @@ static int check_archive_entries(const char* archive, char sources[64][PATH_MAX]
     assert_true(test_command(arguments, work, 10) == 0);
     char* contents = test_stdout();
     int count = 0;
-    for (char* entry = strtok(contents, "\n"); entry != NULL; entry = strtok(NULL, "\n")) {
+    char* context = NULL;
+    for (char* entry = strtok_r(contents, "\n", &context); entry != NULL;
+         entry = strtok_r(NULL, "\n", &context)) {
         if (!strcmp(entry, "pa1/")) {
             continue;
         }

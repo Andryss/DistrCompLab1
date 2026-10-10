@@ -121,7 +121,11 @@ char* test_read_file(const char* path) {
     assert_true(length >= 0);
     rewind(file);
     char* text = malloc((size_t)length + 1);
-    assert_true(text != NULL);
+    if (text == NULL) {
+        fclose(file);
+        fail();
+        return NULL;
+    }
     assert_true(fread(text, 1, (size_t)length, file) == (size_t)length);
     text[length] = '\0';
     assert_true(fclose(file) == 0);
