@@ -1,5 +1,8 @@
-#ifndef PA1_TEST_SUPPORT_H
-#define PA1_TEST_SUPPORT_H
+/** @file
+ * Объявления модуля test_support.
+ */
+#ifndef DISTR_TEST_SUPPORT_H
+#define DISTR_TEST_SUPPORT_H
 
 /* В macOS mkdtemp объявляется в расширениях Darwin, а не в POSIX-разделе. */
 #ifdef __APPLE__
@@ -43,4 +46,4 @@ char* test_stdout(void);
 /** Читает stderr последней команды. */
 char* test_stderr(void);
 
-#endif // PA1_TEST_SUPPORT_H
+#endif // DISTR_TEST_SUPPORT_H

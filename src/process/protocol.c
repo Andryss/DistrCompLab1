@@ -1,4 +1,7 @@
 #include "protocol.h"
+#include "pa1.h"
+#include "dispatcher.h"
+#include "philosophers.h"
 
 /** Проверяет результат snprintf и заполняет заголовок готового сообщения. */
 static int prepare_message(Message* message, MessageType type, int length) {
@@ -19,26 +22,19 @@ static int publish_message(Process* process, const Logs* logs, const Message* me
     if (log_event(logs, message->s_payload, message->s_header.s_payload_len) < 0) {
         return -1;
     }
-    return send_multicast(process, message);
-}
-
-/** FIFO сохраняет ранние DONE в канале до перехода к следующему барьеру. */
-static int wait_for_children(Process* process, MessageType type) {
-    for (int peer = 1; peer < process->count; ++peer) {
+    for (int peer = 0; peer < process->count; ++peer) {
         if (peer == process->id) {
             continue;
         }
-
-        Message message;
-        if (receive(process, (local_id)peer, &message) < 0) {
-            return -1;
-        }
-        if (message.s_header.s_type != (int)type) {
-            errno = EBADMSG;
-            return -1;
+        while (send(process, (local_id)peer, message) < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                return -1;
+            }
+            if (dispatcher_step(process) < 0) {
+                return -1;
+            }
         }
     }
-
     return 0;
 }
 
@@ -64,7 +60,7 @@ static int synchronize_start(Process* process, const Logs* logs) {
     if (publish_message(process, logs, &message) < 0) {
         return -1;
     }
-    if (wait_for_children(process, STARTED) < 0) {
+    if (dispatcher_wait(process, STARTED) < 0) {
         return -1;
     }
 
@@ -82,7 +78,7 @@ static int synchronize_finish(Process* process, const Logs* logs) {
     if (publish_message(process, logs, &message) < 0) {
         return -1;
     }
-    if (wait_for_children(process, DONE) < 0) {
+    if (dispatcher_wait(process, DONE) < 0) {
         return -1;
     }
 
@@ -90,17 +86,20 @@ static int synchronize_finish(Process* process, const Logs* logs) {
 }
 
 int protocol_run_child(Process* process, const Logs* logs) {
+    philosophers_initialize(process);
     if (synchronize_start(process, logs) < 0) {
         return -1;
     }
 
-    // На подготовительном этапе полезная работа отсутствует.
-    return synchronize_finish(process, logs);
+    if (perform_work(process) < 0 || synchronize_finish(process, logs) < 0) {
+        return -1;
+    }
+    return 0;
 }
 
 int protocol_run_parent(Process* process) {
-    if (wait_for_children(process, STARTED) < 0) {
+    if (dispatcher_wait(process, STARTED) < 0) {
         return -1;
     }
-    return wait_for_children(process, DONE);
+    return dispatcher_wait(process, DONE);
 }

@@ -1,5 +1,8 @@
-#ifndef PA1_RUNTIME_H
-#define PA1_RUNTIME_H
+/** @file
+ * Объявления модуля runtime.
+ */
+#ifndef DISTR_RUNTIME_H
+#define DISTR_RUNTIME_H
 
 #include "platform.h"
 #include "process.h"
@@ -17,8 +20,9 @@
 /**
  * Создаёт сеть и дочерние процессы, выполняет обмен и освобождает ресурсы.
  * @param child_count число детей, проверенное при разборе аргументов
+ * @param mutex_enabled признак защиты полезной работы алгоритмом философов
  * @return 0 при успехе, -1 при ошибке; диагностика выводится в stderr
  */
-int runtime_execute(int child_count);
+int runtime_execute(int child_count, int mutex_enabled);
 
-#endif // PA1_RUNTIME_H
+#endif // DISTR_RUNTIME_H

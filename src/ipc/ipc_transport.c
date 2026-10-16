@@ -34,11 +34,20 @@ static int valid_message(const Message* message) {
 }
 
 /** Не занимает CPU непрерывным опросом, когда во входящих каналах нет данных. */
-static void pause_reader(void) {
+void ipc_pause(void) {
     struct timespec delay = {0, 1000000L};
     while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {
         // Продолжаем оставшуюся часть паузы после сигнала.
     }
+}
+
+/** Записывает байты напрямую, повторяя только прерванный системный вызов. */
+static ssize_t write_bytes(int descriptor, const void* bytes, size_t size) {
+    ssize_t written;
+    do {
+        written = write(descriptor, bytes, size);
+    } while (written < 0 && errno == EINTR);
+    return written;
 }
 
 int send(void* self, local_id dst, const Message* message) {
@@ -46,12 +55,28 @@ int send(void* self, local_id dst, const Message* message) {
     if (!valid_peer(process, dst) || !valid_message(message)) {
         return fail(EINVAL);
     }
-    if (process->out[dst] < 0) {
+    if (process->ipc.out[dst] < 0) {
         return fail(EBADF);
     }
-
     size_t size = sizeof(MessageHeader) + message->s_header.s_payload_len;
-    return io_write_all(process->out[dst], message, size);
+    errno = 0;
+    long limit = fpathconf(process->ipc.out[dst], _PC_PIPE_BUF);
+    if (limit < 0) {
+        return fail(errno != 0 ? errno : EINVAL);
+    }
+    if (size > (size_t)limit) {
+        return fail(EMSGSIZE);
+    }
+
+    ssize_t written = write_bytes(process->ipc.out[dst], message, size);
+    if (written < 0) {
+        return -1;
+    }
+    if ((size_t)written != size) {
+        // Нарушение гарантии атомарности: повторять повреждённый кадр нельзя.
+        return fail(EIO);
+    }
+    return 0;
 }
 
 int send_multicast(void* self, const Message* message) {
@@ -107,11 +132,11 @@ static int read_fragment(int descriptor, ReceiveState* state, size_t target) {
 
 /** Собирает полный кадр; неполный кадр остаётся в состоянии его отправителя. */
 static int read_frame(Process* process, int sender, Message* message) {
-    ReceiveState* state = &process->rx[sender];
+    ReceiveState* state = &process->ipc.rx[sender];
     if (state->error != 0) {
         return fail(state->error);
     }
-    if (state->closed || process->in[sender] < 0) {
+    if (state->closed || process->ipc.in[sender] < 0) {
         return fail(EPIPE);
     }
 
@@ -130,10 +155,11 @@ static int read_frame(Process* process, int sender, Message* message) {
             }
         }
 
-        int result = read_fragment(process->in[sender], state, target);
+        int result = read_fragment(process->ipc.in[sender], state, target);
         if (result != RECEIVE_COMPLETE) {
             return result;
         }
+        process->ipc.read_progress = 1;
     }
 }
 
@@ -144,6 +170,7 @@ int receive(void* self, local_id from, Message* message) {
     }
 
     for (;;) {
+        process->ipc.read_progress = 0;
         int result = read_frame(process, from, message);
         if (result == RECEIVE_COMPLETE) {
             return 0;
@@ -151,26 +178,30 @@ int receive(void* self, local_id from, Message* message) {
         if (result == RECEIVE_ERROR) {
             return -1;
         }
-        pause_reader();
+        if (!process->ipc.read_progress) {
+            ipc_pause();
+        }
     }
 }
 
 /** Делает один круг по отправителям и сдвигает начало после успешного приёма. */
-static int scan_channels(Process* process, Message* message) {
+int ipc_receive_step(Process* process, local_id* source, Message* message) {
+    process->ipc.read_progress = 0;
     int open_peers = 0;
     for (int step = 0; step < process->count; ++step) {
-        int sender = (process->next_peer + step) % process->count;
-        if (sender == process->id || process->in[sender] < 0) {
+        int sender = (process->ipc.next_peer + step) % process->count;
+        if (sender == process->id || process->ipc.in[sender] < 0) {
             continue;
         }
 
         int result = read_frame(process, sender, message);
         if (result == RECEIVE_COMPLETE) {
-            process->next_peer = (sender + 1) % process->count;
+            *source = (local_id)sender;
+            process->ipc.next_peer = (sender + 1) % process->count;
             return RECEIVE_COMPLETE;
         }
         if (result == RECEIVE_ERROR) {
-            if (process->rx[sender].closed && process->rx[sender].error == 0) {
+            if (process->ipc.rx[sender].closed && process->ipc.rx[sender].error == 0) {
                 continue;
             }
             return RECEIVE_ERROR;
@@ -191,13 +222,16 @@ int receive_any(void* self, Message* message) {
     }
 
     for (;;) {
-        int result = scan_channels(process, message);
+        local_id sender;
+        int result = ipc_receive_step(process, &sender, message);
         if (result == RECEIVE_COMPLETE) {
             return 0;
         }
         if (result == RECEIVE_ERROR) {
             return -1;
         }
-        pause_reader();
+        if (!process->ipc.read_progress) {
+            ipc_pause();
+        }
     }
 }

@@ -55,7 +55,7 @@ static void compare_files(const char* original, const char* extracted) {
     assert_true(fclose(first) == 0 && fclose(second) == 0);
 }
 
-/** Проверяет, что каждый элемент архива — исходник верхнего уровня каталога pa1. */
+/** Проверяет, что каждый элемент архива — исходник верхнего уровня каталога приложения. */
 static int check_archive_entries(const char* archive, char sources[64][PATH_MAX], int source_count, const char* work) {
     char* arguments[] = {"tar", "-tzf", (char*)archive, NULL};
     assert_true(test_command(arguments, work, 10) == 0);
@@ -64,12 +64,16 @@ static int check_archive_entries(const char* archive, char sources[64][PATH_MAX]
     char* context = NULL;
     for (char* entry = strtok_r(contents, "\n", &context); entry != NULL;
          entry = strtok_r(NULL, "\n", &context)) {
-        if (!strcmp(entry, "pa1/")) {
+        if (!strcmp(entry, TEST_APP_NAME "/")) {
             continue;
         }
-        assert_true(!strncmp(entry, "pa1/", 4));
-        const char* name = entry + 4;
-        assert_true(strchr(name, '/') == NULL && is_source(name));
+        assert_true(!strncmp(entry, TEST_APP_NAME "/", strlen(TEST_APP_NAME) + 1));
+        const char* name = entry + strlen(TEST_APP_NAME) + 1;
+        assert_null(strchr(name, '/'));
+        if (!strcmp(name, "libruntime.so")) {
+            continue;
+        }
+        assert_true(is_source(name));
         int found = 0;
         for (int index = 0; index < source_count; ++index) {
             if (!strcmp(name, strrchr(sources[index], '/') + 1)) {
@@ -85,7 +89,7 @@ static int check_archive_entries(const char* archive, char sources[64][PATH_MAX]
 }
 
 /** Собирает извлечённые исходники командой задания и запускает на них весь протокол. */
-static void compile_and_run(char sources[64][PATH_MAX], int source_count, const char* extracted) {
+static void compile_extracted_sources(char sources[64][PATH_MAX], int source_count, const char* extracted, int original_runtime) {
     char* arguments[64] = {"clang", "-std=c99", "-Wall", "-pedantic", NULL};
     int argument_count = 4;
     for (int index = 0; index < source_count; ++index) {
@@ -94,9 +98,16 @@ static void compile_and_run(char sources[64][PATH_MAX], int source_count, const 
         test_path(copy, extracted, name);
         compare_files(sources[index], copy);
         if (!strcmp(strrchr(name, '.'), ".c")) {
-            assert_true(argument_count < 63);
+            assert_true(argument_count < 61);
             arguments[argument_count++] = (char*)name;
         }
+    }
+    if (original_runtime) {
+        arguments[argument_count++] = "-L.";
+        arguments[argument_count++] = "-lruntime";
+    } else {
+        arguments[argument_count++] = "-I.";
+        arguments[argument_count++] = TEST_RUNTIME_SOURCE;
     }
     arguments[argument_count] = NULL;
     assert_true(test_command(arguments, extracted, 60) == 0);
@@ -107,27 +118,52 @@ static void compile_and_run(char sources[64][PATH_MAX], int source_count, const 
     assert_true(errors[0] == '\0');
     free(errors);
 
-    char binary[PATH_MAX];
-    test_path(binary, extracted, "a.out");
-    test_program(binary);
 }
 
-void test_package(const char* repository) {
+/** Запускает проверки с путём к библиотеке и восстанавливает окружение тестов. */
+static void run_extracted_program(const char* extracted, int original_runtime) {
+    char binary[PATH_MAX];
+    test_path(binary, extracted, "a.out");
+    const char* previous_path = getenv("LD_LIBRARY_PATH");
+    char* saved_path = previous_path == NULL ? NULL : strdup(previous_path);
+    if (previous_path != NULL) {
+        assert_non_null(saved_path);
+    }
+    if (original_runtime) {
+        assert_int_equal(0, setenv("LD_LIBRARY_PATH", extracted, 1));
+    }
+    if (original_runtime) {
+        test_program_original(binary);
+    } else {
+        test_program(binary);
+    }
+    if (saved_path != NULL) {
+        assert_int_equal(0, setenv("LD_LIBRARY_PATH", saved_path, 1));
+        free(saved_path);
+    } else {
+        assert_int_equal(0, unsetenv("LD_LIBRARY_PATH"));
+    }
+}
+
+void test_package(const char* repository, int original_runtime) {
     char path[PATH_MAX];
-    test_path(path, PA1_BUILD_DIRECTORY, "dist");
+    test_path(path, TEST_BUILD_DIRECTORY, "dist");
     assert_true(mkdir(path, 0700) == 0 || errno == EEXIST);
-    test_path(path, PA1_BUILD_DIRECTORY, "dist/pa1");
+    test_path(path, TEST_BUILD_DIRECTORY, "dist/" TEST_APP_NAME);
     assert_true(mkdir(path, 0700) == 0 || errno == EEXIST);
-    test_path(path, PA1_BUILD_DIRECTORY, "dist/pa1/a.out");
+    test_path(path, TEST_BUILD_DIRECTORY, "dist/" TEST_APP_NAME "/a.out");
     FILE* stale = fopen(path, "w");
     assert_non_null(stale);
     assert_true(fputs("old build artifact", stale) >= 0);
     assert_true(fclose(stale) == 0);
 
-    char* package[] = {"make", "package", "BUILD_DIR=" PA1_BUILD_DIRECTORY, NULL};
+    char* runtime[] = {"make", "runtime", "BUILD_DIR=" TEST_BUILD_DIRECTORY, NULL};
+    assert_int_equal(0, test_command(runtime, repository, 60));
+    char* package[] = {"make", "package", "BUILD_DIR=" TEST_BUILD_DIRECTORY,
+        "APP_NAME=" TEST_APP_NAME, "RUNTIME_LIB=" TEST_RUNTIME_LIBRARY, NULL};
     assert_true(test_command(package, repository, 60) == 0);
     char archive[PATH_MAX], sources[PATH_MAX], work[PATH_MAX], extracted[PATH_MAX];
-    test_path(archive, PA1_BUILD_DIRECTORY, "dist/pa1.tar.gz");
+    test_path(archive, TEST_BUILD_DIRECTORY, "dist/" TEST_APP_NAME ".tar.gz");
     test_path(sources, repository, "src");
     test_case_directory(work);
     char source_files[64][PATH_MAX];
@@ -136,7 +172,11 @@ void test_package(const char* repository) {
     assert_int_equal(source_count, check_archive_entries(archive, source_files, source_count, work));
     char* extract[] = {"tar", "-xzf", archive, NULL};
     assert_true(test_command(extract, work, 10) == 0);
-    test_path(extracted, work, "pa1");
-    compile_and_run(source_files, source_count, extracted);
+    test_path(extracted, work, TEST_APP_NAME);
+    char copy[PATH_MAX];
+    test_path(copy, extracted, "libruntime.so");
+    compare_files(TEST_RUNTIME_LIBRARY, copy);
+    compile_extracted_sources(source_files, source_count, extracted, original_runtime);
+    run_extracted_program(extracted, original_runtime);
     puts("Package tests passed");
 }

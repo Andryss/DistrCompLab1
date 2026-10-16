@@ -1,5 +1,8 @@
-#ifndef PA1_CHANNELS_H
-#define PA1_CHANNELS_H
+/** @file
+ * Объявления модуля channels.
+ */
+#ifndef DISTR_CHANNELS_H
+#define DISTR_CHANNELS_H
 
 #include "platform.h"
 #include <fcntl.h>
@@ -18,7 +21,7 @@ void channels_initialize(Channels* channels);
 /** Создаёт и логирует канал для каждой пары различных процессов. */
 int channels_create(Channels* channels, int process_count, const Logs* logs);
 
-/** Передаёт процессу его концы каналов, включает неблокирующее чтение, закрывает остальные. */
+/** Передаёт процессу его концы каналов, включает неблокирующие чтение и запись, закрывает остальные. */
 int channels_attach(Channels* channels, Process* process);
 
 /** Закрывает концы, ещё принадлежащие общей таблице каналов. */
@@ -27,4 +30,4 @@ void channels_close(Channels* channels, int process_count);
 /** Закрывает входящие и исходящие дескрипторы текущего процесса. */
 void channels_close_process(Process* process);
 
-#endif // PA1_CHANNELS_H
+#endif // DISTR_CHANNELS_H

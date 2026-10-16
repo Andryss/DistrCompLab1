@@ -1,5 +1,8 @@
-#ifndef PA1_LOGGING_H
-#define PA1_LOGGING_H
+/** @file
+ * Объявления модуля logging.
+ */
+#ifndef DISTR_LOGGING_H
+#define DISTR_LOGGING_H
 
 #include "platform.h"
 #include "common.h"
@@ -31,4 +34,4 @@ int log_event(const Logs* logs, const char* text, size_t length);
 /** Записывает направление канала и оба его дескриптора в pipes.log. */
 int log_channel(const Logs* logs, int source, int destination, int read_fd, int write_fd);
 
-#endif // PA1_LOGGING_H
+#endif // DISTR_LOGGING_H

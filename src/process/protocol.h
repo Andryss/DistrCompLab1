@@ -1,8 +1,10 @@
-#ifndef PA1_PROTOCOL_H
-#define PA1_PROTOCOL_H
+/** @file
+ * Объявления модуля protocol.
+ */
+#ifndef DISTR_PROTOCOL_H
+#define DISTR_PROTOCOL_H
 
 #include "platform.h"
-#include "pa1.h"
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -15,4 +17,4 @@ int protocol_run_child(Process* process, const Logs* logs);
 /** Получает STARTED и DONE от всех детей; родитель ничего не рассылает. */
 int protocol_run_parent(Process* process);
 
-#endif // PA1_PROTOCOL_H
+#endif // DISTR_PROTOCOL_H

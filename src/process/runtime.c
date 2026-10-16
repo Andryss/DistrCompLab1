@@ -18,8 +18,8 @@ static void runtime_initialize(Runtime* runtime, int child_count) {
     runtime->logs.pipes_fd = -1;
 
     for (int peer = 0; peer < PROCESS_LIMIT; ++peer) {
-        runtime->process.in[peer] = -1;
-        runtime->process.out[peer] = -1;
+        runtime->process.ipc.in[peer] = -1;
+        runtime->process.ipc.out[peer] = -1;
     }
     channels_initialize(&runtime->channels);
 }
@@ -109,10 +109,10 @@ static void execute_child(Runtime* runtime, local_id id) {
         result = protocol_run_child(&runtime->process, &runtime->logs);
     }
     if (result < 0) {
-        perror("pa1 child");
+        perror("child process");
     }
     if (runtime_close(runtime, result < 0) < 0) {
-        perror("pa1 child logs");
+        perror("child logs");
         result = -1;
     }
 
@@ -155,16 +155,17 @@ static int execute_parent(Runtime* runtime) {
     return wait_for_all_children(runtime);
 }
 
-int runtime_execute(int child_count) {
+int runtime_execute(int child_count, int mutex_enabled) {
     Runtime runtime;
     runtime_initialize(&runtime, child_count);
+    runtime.process.philosopher.enabled = mutex_enabled;
 
     int result = execute_parent(&runtime);
     if (result < 0) {
-        perror("pa1");
+        perror("runtime");
     }
     if (runtime_close(&runtime, result < 0) < 0) {
-        perror("pa1 logs");
+        perror("runtime logs");
         result = -1;
     }
     return result;

@@ -1,13 +1,21 @@
+# База для C99: анализ потока данных и ошибок C/C++, без навязывания C++-стиля.
 Checks: >-
   -*,
-  clang-analyzer-core.*,clang-analyzer-deadcode.*,clang-analyzer-unix.*,
-  clang-analyzer-valist.*,
-  bugprone-assert-side-effect,bugprone-infinite-loop,
-  bugprone-misplaced-widening-cast,bugprone-sizeof-expression,
-  bugprone-suspicious-memory-comparison,bugprone-suspicious-memset-usage,
-  bugprone-suspicious-semicolon,bugprone-multiple-statement-macro,
-  misc-redundant-expression,readability-braces-around-statements,
+  clang-analyzer-*,
+  -clang-analyzer-cplusplus*,
+  -clang-analyzer-optin*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-unsafe-functions,
+  cert-dcl16-c,cert-env33-c,cert-exp42-c,
+  cert-flp30-c,cert-sig30-c,cert-str34-c,
+  cppcoreguidelines-avoid-goto,
+  misc-redundant-expression,
+  readability-braces-around-statements,
   readability-misleading-indentation
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|/)(src/(main\.h|process/.*|ipc/.*|utils/.*)|tests/.*)$'
 FormatStyle: none
+CheckOptions:
+  bugprone-reserved-identifier.AllowedIdentifiers: '_POSIX_C_SOURCE;_DARWIN_C_SOURCE'

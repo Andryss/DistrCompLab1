@@ -34,18 +34,19 @@ int channels_create(Channels* channels, int process_count, const Logs* logs) {
 
 /** Забирает нужные концы из общей таблицы без дублирования владения. */
 static int attach_peer(Channels* channels, Process* process, int peer) {
-    process->in[peer] = channels->descriptors[peer][process->id][PIPE_READ];
-    process->out[peer] = channels->descriptors[process->id][peer][PIPE_WRITE];
+    process->ipc.in[peer] = channels->descriptors[peer][process->id][PIPE_READ];
+    process->ipc.out[peer] = channels->descriptors[process->id][peer][PIPE_WRITE];
     channels->descriptors[peer][process->id][PIPE_READ] = -1;
     channels->descriptors[process->id][peer][PIPE_WRITE] = -1;
 
-    // Сохраняем текущие флаги и добавляем O_NONBLOCK только для чтения.
-    // Пустой канал вернёт EAGAIN: receive_any() сможет проверить других отправителей.
-    int flags = fcntl(process->in[peer], F_GETFL);
-    if (flags < 0) {
-        return -1;
+    int descriptors[] = {process->ipc.in[peer], process->ipc.out[peer]};
+    for (int i = 0; i < 2; ++i) {
+        int flags = fcntl(descriptors[i], F_GETFL);
+        if (flags < 0 || fcntl(descriptors[i], F_SETFL, flags | O_NONBLOCK) < 0) {
+            return -1;
+        }
     }
-    return fcntl(process->in[peer], F_SETFL, flags | O_NONBLOCK);
+    return 0;
 }
 
 int channels_attach(Channels* channels, Process* process) {
@@ -78,13 +79,13 @@ void channels_close(Channels* channels, int process_count) {
 
 void channels_close_process(Process* process) {
     for (int peer = 0; peer < process->count; ++peer) {
-        if (process->in[peer] >= 0) {
-            close(process->in[peer]);
-            process->in[peer] = -1;
+        if (process->ipc.in[peer] >= 0) {
+            close(process->ipc.in[peer]);
+            process->ipc.in[peer] = -1;
         }
-        if (process->out[peer] >= 0) {
-            close(process->out[peer]);
-            process->out[peer] = -1;
+        if (process->ipc.out[peer] >= 0) {
+            close(process->ipc.out[peer]);
+            process->ipc.out[peer] = -1;
         }
     }
 }

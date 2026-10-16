@@ -1,5 +1,8 @@
-#ifndef PA1_IO_H
-#define PA1_IO_H
+/** @file
+ * Объявления модуля io.
+ */
+#ifndef DISTR_IO_H
+#define DISTR_IO_H
 
 #include "platform.h"
 #include <errno.h>
@@ -13,4 +16,4 @@
  */
 int io_write_all(int descriptor, const void* data, size_t size);
 
-#endif // PA1_IO_H
+#endif // DISTR_IO_H

@@ -36,7 +36,7 @@ static void remove_tree(const char* path) {
 
 void test_workspace_open(void) {
     const char* temporary = getenv("TMPDIR");
-    test_path(workspace, temporary != NULL ? temporary : "/tmp", "pa1-tests-XXXXXX");
+    test_path(workspace, temporary != NULL ? temporary : "/tmp", "distributed-tests-XXXXXX");
     assert_non_null(mkdtemp(workspace));
     test_path(stdout_path, workspace, "stdout");
     test_path(stderr_path, workspace, "stderr");

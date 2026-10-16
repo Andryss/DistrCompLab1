@@ -37,3 +37,5 @@ jobs:
           sudo apt-get install -y clang libcmocka-dev pkg-config
       - name: Run functional tests
         run: make test
+      - name: Check submission with original Linux runtime
+        run: make test-linux

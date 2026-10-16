@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!Makefile
+!src/
+!src/**
+!docs/
+!docs/PAs_master/
+!docs/PAs_master/pa2345_starter_code.tar.gz
