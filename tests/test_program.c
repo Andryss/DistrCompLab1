@@ -41,7 +41,9 @@ static void check_events(const char* path, int children, char started[PROCESS_LI
                 if (started[id][0] != '\0') {
                     assert_true(!strcmp(started[id], line));
                 }
-                strcpy(started[id], line);
+                size_t length = strlen(line);
+                assert_true(length < sizeof(started[id]));
+                memcpy(started[id], line, length + 1);
                 ++started_count;
                 break;
             }

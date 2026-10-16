@@ -33,7 +33,10 @@ static void collect_sources(const char* directory_path, char sources[64][PATH_MA
             for (int index = 0; index < *count; ++index) {
                 assert_true(strcmp(strrchr(sources[index], '/') + 1, entry->d_name) != 0);
             }
-            strcpy(sources[(*count)++], path);
+            size_t length = strlen(path);
+            assert_true(length < sizeof(sources[*count]));
+            memcpy(sources[*count], path, length + 1);
+            ++*count;
         }
     }
     assert_int_equal(0, closedir(directory));
