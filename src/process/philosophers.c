@@ -21,46 +21,42 @@ static int transfer_resource(Process* process, int peer, MessageType type) {
 
 /** Передаёт запрошенную грязную вилку; владение снимается после успешной записи. */
 static int release_requested_fork(Process* process, int peer) {
-    if (!process->philosopher.fork[peer] || !process->philosopher.dirty[peer] || !process->philosopher.req[peer]) {
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    if (!philosopher->fork[peer] || !philosopher->dirty[peer] || !philosopher->req[peer]) {
         return 0;
     }
     int result = transfer_resource(process, peer, CS_REPLY);
     if (result != 0) {
         return result;
     }
-    process->philosopher.fork[peer] = 0;
-    process->philosopher.dirty[peer] = 0;
+    philosopher->fork[peer] = 0;
+    philosopher->dirty[peer] = 0;
     return 0;
 }
 
 /** Запрашивает отсутствующую вилку только при наличии её маркера запроса. */
 static int request_missing_fork(Process* process, int peer) {
-    if (process->philosopher.state != HUNGRY ||
-        process->philosopher.fork[peer] || !process->philosopher.req[peer]) {
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    if (philosopher->state != HUNGRY ||
+        philosopher->fork[peer] || !philosopher->req[peer]) {
         return 0;
     }
     int result = transfer_resource(process, peer, CS_REQUEST);
     if (result != 0) {
         return result;
     }
-    process->philosopher.req[peer] = 0;
+    philosopher->req[peer] = 0;
     return 0;
-}
-
-/** Проверяет принадлежность сообщения ребру графа конфликтов и пустое тело. */
-static int valid_control_message(const Process* process, local_id sender, const Message* message) {
-    return sender > PARENT_ID && sender < process->count && sender != process->id
-        && process->id != PARENT_ID && process->philosopher.enabled
-        && message->s_header.s_payload_len == 0;
 }
 
 /** Принимает единственный маркер запроса либо чистую вилку. */
 static int accept_resource(Process* process, local_id sender, MessageType type) {
-    if (type == CS_REQUEST && !process->philosopher.req[sender]) {
-        process->philosopher.req[sender] = 1;
-    } else if (type == CS_REPLY && !process->philosopher.fork[sender]) {
-        process->philosopher.fork[sender] = 1;
-        process->philosopher.dirty[sender] = 0;
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    if (type == CS_REQUEST && !philosopher->req[sender]) {
+        philosopher->req[sender] = 1;
+    } else if (type == CS_REPLY && !philosopher->fork[sender]) {
+        philosopher->fork[sender] = 1;
+        philosopher->dirty[sender] = 0;
     } else {
         errno = EBADMSG;
         return -1;
@@ -70,28 +66,31 @@ static int accept_resource(Process* process, local_id sender, MessageType type) 
 
 /** Отмечает вход в КС и загрязняет все имеющиеся вилки. */
 static void enter_critical_section(Process* process) {
-    process->philosopher.state = EATING;
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    philosopher->state = EATING;
     for (int peer = 1; peer < process->count; ++peer) {
-        if (process->philosopher.fork[peer]) {
-            process->philosopher.dirty[peer] = 1;
+        if (philosopher->fork[peer]) {
+            philosopher->dirty[peer] = 1;
         }
     }
 }
 
 void philosophers_initialize(Process* process) {
-    process->philosopher.state = THINKING;
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    philosopher->state = THINKING;
     for (int peer = 1; peer < process->count; ++peer) {
         if (peer == process->id) {
             continue;
         }
-        process->philosopher.fork[peer] = process->id < peer;
-        process->philosopher.dirty[peer] = process->philosopher.fork[peer];
-        process->philosopher.req[peer] = process->id > peer;
+        philosopher->fork[peer] = process->id < peer;
+        philosopher->dirty[peer] = philosopher->fork[peer];
+        philosopher->req[peer] = process->id > peer;
     }
 }
 
 int philosophers_service(Process* process) {
-    if (!process->philosopher.enabled || process->id == PARENT_ID || process->philosopher.state == EATING) {
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    if (!philosopher->enabled || process->id == PARENT_ID || philosopher->state == EATING) {
         return 0;
     }
 
@@ -107,22 +106,21 @@ int philosophers_service(Process* process) {
 }
 
 int philosophers_receive(Process* process, local_id sender, const Message* message) {
-    if (!valid_control_message(process, sender, message)) {
+    if (sender == PARENT_ID || process->id == PARENT_ID
+        || !process->philosopher.enabled || message->s_header.s_payload_len != 0) {
         errno = EBADMSG;
         return -1;
     }
-    if (accept_resource(process, sender, (MessageType)message->s_header.s_type) < 0) {
-        return -1;
-    }
-    return philosophers_service(process);
+    return accept_resource(process, sender, (MessageType)message->s_header.s_type);
 }
 
 int philosophers_ready(const Process* process) {
+    const ProcessPhilosopher* philosopher = &process->philosopher;
     for (int peer = 1; peer < process->count; ++peer) {
         if (peer == process->id) {
             continue;
         }
-        if (!process->philosopher.fork[peer] || (process->philosopher.dirty[peer] && process->philosopher.req[peer])) {
+        if (!philosopher->fork[peer] || (philosopher->dirty[peer] && philosopher->req[peer])) {
             return 0;
         }
     }
@@ -131,7 +129,7 @@ int philosophers_ready(const Process* process) {
 
 int request_cs(const void* self) {
     Process* process = (Process*)self;
-    if (process == NULL || process->id == PARENT_ID ||
+    if (process->id == PARENT_ID ||
         process->philosopher.state != THINKING) {
         errno = EINVAL;
         return -1;
@@ -152,7 +150,7 @@ int request_cs(const void* self) {
 
 int release_cs(const void* self) {
     Process* process = (Process*)self;
-    if (process == NULL || process->philosopher.state != EATING) {
+    if (process->philosopher.state != EATING) {
         errno = EINVAL;
         return -1;
     }

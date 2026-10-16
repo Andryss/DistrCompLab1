@@ -3,29 +3,16 @@
 #include "philosophers.h"
 #include <errno.h>
 
-/** Учитывает STARTED/DONE по отправителю, проверяя дубликаты и порядок событий. */
-static int receive_barrier(Process* process, local_id sender, MessageType type) {
-    if (sender == PARENT_ID) {
-        errno = EBADMSG;
-        return -1;
-    }
-
-    int* received = type == STARTED ? process->barriers.started : process->barriers.done;
-    if (received[sender] || (type == DONE && !process->barriers.started[sender])) {
-        errno = EBADMSG;
-        return -1;
-    }
-    received[sender] = 1;
-    return 0;
-}
-
 /** Направляет полученный кадр обработчику барьеров или философов. */
 static int dispatch_message(Process* process, local_id sender, const Message* message) {
     MessageType type = (MessageType)message->s_header.s_type;
     switch (type) {
         case STARTED:
+            process->barriers.started[sender] = 1;
+            return 0;
         case DONE:
-            return receive_barrier(process, sender, type);
+            process->barriers.done[sender] = 1;
+            return 0;
         case CS_REQUEST:
         case CS_REPLY:
             return philosophers_receive(process, sender, message);
@@ -46,35 +33,25 @@ static int barrier_complete(const Process* process, MessageType type) {
     return 1;
 }
 
-/** Закрытие входящего канала ребёнка допустимо только после его DONE. */
-static int check_closed_channels(const Process* process) {
-    for (int peer = 1; peer < process->count; ++peer) {
-        if (peer != process->id && process->ipc.rx[peer].closed && !process->barriers.done[peer]) {
-            errno = EPIPE;
-            return -1;
-        }
-    }
-    return 0;
-}
-
 int dispatcher_step(Process* process) {
     Message message;
     local_id sender;
     int received = ipc_receive_step(process, &sender, &message);
-    if (received < 0) {
-        if (errno != EPIPE || !barrier_complete(process, DONE)) {
-            return -1;
-        }
-        received = 0;
-    }
-    if (received > 0 && dispatch_message(process, sender, &message) < 0) {
+    if (received == RECEIVE_ERROR) {
         return -1;
     }
-    if (check_closed_channels(process) < 0 || philosophers_service(process) < 0) {
+    if (received == RECEIVE_CLOSED && sender != PARENT_ID && !process->barriers.done[sender]) {
+        errno = EPIPE;
+        return -1;
+    }
+    if (received == RECEIVE_COMPLETE && dispatch_message(process, sender, &message) < 0) {
+        return -1;
+    }
+    if (philosophers_service(process) < 0) {
         return -1;
     }
 
-    if (!received && !process->ipc.read_progress) {
+    if (received == RECEIVE_PENDING) {
         ipc_pause();
     }
     return 0;

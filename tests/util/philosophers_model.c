@@ -83,7 +83,7 @@ static void collect_messages(int id) {
     local_id sender;
     Message message;
     int result;
-    while ((result = ipc_receive_step(&processes[id], &sender, &message)) > 0) {
+    while ((result = ipc_receive_step(&processes[id], &sender, &message)) == RECEIVE_COMPLETE) {
         Mailbox* mailbox = &mail[sender][id];
         assert_true(mailbox->count < MAILBOX_SIZE);
         mailbox->type[mailbox->count++] = message.s_header.s_type;

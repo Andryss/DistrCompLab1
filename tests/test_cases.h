@@ -46,7 +46,7 @@ void test_philosophers_model(void** state);
 /** Проверяет события жизненного цикла и обслуживание вилок после своей работы. */
 void test_dispatcher_lifecycle(void** state);
 
-/** Проверяет участников барьера, дубликаты, порядок событий и закрытие конкретного соседа. */
+/** Проверяет всех участников барьера, безвредность повторов и закрытие конкретного соседа. */
 void test_barrier_senders(void** state);
 
 /** Проверяет гонку закрытия с ранним запросом и ещё не обработанным DONE. */
@@ -67,5 +67,11 @@ void test_program_original(const char* binary);
 
 /** Проверяет сохранение вилки и маркера при EAGAIN до начала передачи. */
 void test_philosophers_backpressure(void** state);
+
+/** Проверяет однократное событие EOF и работу оставшихся каналов. */
+void test_ipc_closed_channels(void** state);
+
+/** Проверяет отсутствие отправок при приёме и однократное обслуживание в диспетчере. */
+void test_philosophers_receive_only(void** state);
 
 #endif

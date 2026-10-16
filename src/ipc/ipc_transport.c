@@ -1,29 +1,14 @@
 #include "ipc_transport.h"
 
-/** Результат одного неблокирующего шага приёма. */
-enum receive_status {
-    RECEIVE_ERROR = -1,
-    RECEIVE_PENDING = 0,
-    RECEIVE_COMPLETE = 1
-};
-
 /** Устанавливает errno и возвращает единый код ошибки IPC. */
 static int fail(int error) {
     errno = error;
     return -1;
 }
 
-/** Проверяет наличие контекста и границы его идентификаторов. */
-static int valid_process(const Process* process) {
-    return process != NULL
-        && process->count > 0 && process->count <= PROCESS_LIMIT
-        && process->id >= 0 && process->id < process->count;
-}
-
 /** Проверяет, что адресат существует и отличается от текущего процесса. */
 static int valid_peer(const Process* process, local_id peer) {
-    return valid_process(process)
-        && peer >= 0 && peer < process->count && peer != process->id;
+    return peer >= 0 && peer < process->count && peer != process->id;
 }
 
 /** Проверяет указатель, магическую подпись и допустимую длину тела. */
@@ -55,9 +40,6 @@ int send(void* self, local_id dst, const Message* message) {
     if (!valid_peer(process, dst) || !valid_message(message)) {
         return fail(EINVAL);
     }
-    if (process->ipc.out[dst] < 0) {
-        return fail(EBADF);
-    }
     size_t size = sizeof(MessageHeader) + message->s_header.s_payload_len;
     errno = 0;
     long limit = fpathconf(process->ipc.out[dst], _PC_PIPE_BUF);
@@ -81,7 +63,7 @@ int send(void* self, local_id dst, const Message* message) {
 
 int send_multicast(void* self, const Message* message) {
     Process* process = self;
-    if (!valid_process(process) || !valid_message(message)) {
+    if (!valid_message(message)) {
         return fail(EINVAL);
     }
 
@@ -98,12 +80,11 @@ int send_multicast(void* self, const Message* message) {
 
 /** EOF посреди кадра означает повреждённое сообщение, а не чистое закрытие. */
 static int finish_channel(ReceiveState* state) {
-    state->closed = 1;
     if (state->used > 0) {
-        state->error = EBADMSG;
-        return fail(state->error);
+        return fail(EBADMSG);
     }
-    return fail(EPIPE);
+    state->closed = 1;
+    return RECEIVE_CLOSED;
 }
 
 /** Читает только оставшуюся часть заголовка или тела, не затрагивая следующий кадр. */
@@ -125,7 +106,6 @@ static int read_fragment(int descriptor, ReceiveState* state, size_t target) {
             return RECEIVE_PENDING;
         }
 
-        state->error = errno;
         return RECEIVE_ERROR;
     }
 }
@@ -133,19 +113,15 @@ static int read_fragment(int descriptor, ReceiveState* state, size_t target) {
 /** Собирает полный кадр; неполный кадр остаётся в состоянии его отправителя. */
 static int read_frame(Process* process, int sender, Message* message) {
     ReceiveState* state = &process->ipc.rx[sender];
-    if (state->error != 0) {
-        return fail(state->error);
-    }
-    if (state->closed || process->ipc.in[sender] < 0) {
-        return fail(EPIPE);
+    if (state->closed) {
+        return RECEIVE_CLOSED;
     }
 
     for (;;) {
         size_t target = sizeof(MessageHeader);
         if (state->used >= target) {
             if (!valid_message(&state->message)) {
-                state->error = EBADMSG;
-                return fail(state->error);
+                return fail(EBADMSG);
             }
             target += state->message.s_header.s_payload_len;
             if (state->used == target) {
@@ -159,7 +135,6 @@ static int read_frame(Process* process, int sender, Message* message) {
         if (result != RECEIVE_COMPLETE) {
             return result;
         }
-        process->ipc.read_progress = 1;
     }
 }
 
@@ -170,7 +145,6 @@ int receive(void* self, local_id from, Message* message) {
     }
 
     for (;;) {
-        process->ipc.read_progress = 0;
         int result = read_frame(process, from, message);
         if (result == RECEIVE_COMPLETE) {
             return 0;
@@ -178,46 +152,47 @@ int receive(void* self, local_id from, Message* message) {
         if (result == RECEIVE_ERROR) {
             return -1;
         }
-        if (!process->ipc.read_progress) {
-            ipc_pause();
+        if (result == RECEIVE_CLOSED) {
+            return fail(EPIPE);
         }
+        ipc_pause();
     }
 }
 
-/** Делает один круг по отправителям и сдвигает начало после успешного приёма. */
+/** Делает один круг по открытым каналам и возвращает сообщение либо новое закрытие. */
 int ipc_receive_step(Process* process, local_id* source, Message* message) {
-    process->ipc.read_progress = 0;
-    int open_peers = 0;
     for (int step = 0; step < process->count; ++step) {
         int sender = (process->ipc.next_peer + step) % process->count;
-        if (sender == process->id || process->ipc.in[sender] < 0) {
+        if (sender == process->id || process->ipc.in[sender] < 0 || process->ipc.rx[sender].closed) {
             continue;
         }
 
         int result = read_frame(process, sender, message);
-        if (result == RECEIVE_COMPLETE) {
+        if (result == RECEIVE_COMPLETE || result == RECEIVE_CLOSED) {
             *source = (local_id)sender;
             process->ipc.next_peer = (sender + 1) % process->count;
-            return RECEIVE_COMPLETE;
+            return result;
         }
         if (result == RECEIVE_ERROR) {
-            if (process->ipc.rx[sender].closed && process->ipc.rx[sender].error == 0) {
-                continue;
-            }
             return RECEIVE_ERROR;
         }
-        ++open_peers;
-    }
-
-    if (open_peers == 0) {
-        return fail(EPIPE);
     }
     return RECEIVE_PENDING;
 }
 
+/** Проверяет, может ли публичный receive_any() ещё дождаться сообщения. */
+static int has_open_channels(const Process* process) {
+    for (int peer = 0; peer < process->count; ++peer) {
+        if (peer != process->id && process->ipc.in[peer] >= 0 && !process->ipc.rx[peer].closed) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int receive_any(void* self, Message* message) {
     Process* process = self;
-    if (!valid_process(process) || message == NULL) {
+    if (message == NULL) {
         return fail(EINVAL);
     }
 
@@ -230,7 +205,10 @@ int receive_any(void* self, Message* message) {
         if (result == RECEIVE_ERROR) {
             return -1;
         }
-        if (!process->ipc.read_progress) {
+        if (!has_open_channels(process)) {
+            return fail(EPIPE);
+        }
+        if (result == RECEIVE_PENDING) {
             ipc_pause();
         }
     }

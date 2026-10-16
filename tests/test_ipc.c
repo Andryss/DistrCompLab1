@@ -217,7 +217,7 @@ void test_ipc_backpressure(void** state) {
         local_id sender;
         int result = ipc_receive_step(&peers[1], &sender, &received);
         assert_true(result >= 0);
-        if (result > 0) {
+        if (result == RECEIVE_COMPLETE) {
             int actual;
             memcpy(&actual, received.s_payload, sizeof(actual));
             assert_int_equal(expected, actual);
@@ -269,6 +269,12 @@ void test_ipc_errors(void** state) {
     (void)state;
     connect_peers(0, 1);
     Message message = make_message("broken"), received;
+    assert_int_equal(-1, send(&peers[0], 2, &message));
+    assert_int_equal(EBADF, errno);
+    assert_int_equal(-1, send(&peers[0], 0, &message));
+    assert_int_equal(EINVAL, errno);
+    assert_int_equal(-1, send(&peers[0], 3, &message));
+    assert_int_equal(EINVAL, errno);
     message.s_header.s_magic = 0;
     assert_int_equal(-1, send(&peers[0], 1, &message));
     assert_int_equal(EINVAL, errno);
@@ -306,4 +312,31 @@ void test_channels_nonblocking(void** state) {
         assert_true(fcntl(peers[1].ipc.in[peer], F_GETFL) & O_NONBLOCK);
         assert_true(fcntl(peers[1].ipc.out[peer], F_GETFL) & O_NONBLOCK);
     }
+}
+
+void test_ipc_closed_channels(void** state) {
+    (void)state;
+    connect_peers(1, 0);
+    connect_peers(2, 0);
+    close(peers[1].ipc.out[0]);
+    peers[1].ipc.out[0] = -1;
+
+    Message message = make_message("still open"), received;
+    local_id sender = -1;
+    assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(1, sender);
+    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(0, send(&peers[2], 0, &message));
+    assert_int_equal(0, receive_any(&peers[0], &received));
+    assert_payload(&received, "still open");
+
+    close(peers[2].ipc.out[0]);
+    peers[2].ipc.out[0] = -1;
+    assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(2, sender);
+    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(-1, receive(&peers[0], 1, &received));
+    assert_int_equal(EPIPE, errno);
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
 }

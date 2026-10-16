@@ -26,6 +26,7 @@ void test_philosophers_rules(void** state) {
     low->philosopher.state = EATING;
     message = test_control_message(CS_REQUEST);
     assert_int_equal(0, philosophers_receive(low, 2, &message));
+    assert_int_equal(0, philosophers_service(low));
     assert_true(low->philosopher.fork[2] && low->philosopher.req[2]); /* cannot give while eating */
     assert_false(philosophers_ready(low)); /* dirty + request blocks re-entry */
     assert_int_equal(0, release_cs(low));
@@ -178,6 +179,7 @@ void test_philosophers_backpressure(void** state) {
     // Грязная вилка остаётся у владельца до начала успешной передачи.
     test_write_inject(low->ipc.out[2], MAX_MESSAGE_LEN, 0, 1);
     assert_int_equal(0, philosophers_receive(low, sender, &message));
+    assert_int_equal(0, philosophers_service(low));
     assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
     assert_false(philosophers_ready(low));
     assert_int_equal(0, philosophers_service(low));
@@ -210,20 +212,17 @@ void test_barrier_senders(void** state) {
 
         // Повтор от ребёнка 2 не заменяет отсутствующее событие ребёнка 3.
         assert_int_equal(0, send(test_model_process(2), 1, &message));
-        assert_int_equal(-1, dispatcher_step(process));
-        assert_int_equal(EBADMSG, errno);
+        assert_int_equal(0, dispatcher_step(process));
+        assert_true(received[2]);
         assert_false(received[3]);
+
+        assert_int_equal(0, send(test_model_process(3), 1, &message));
+        assert_int_equal(0, dispatcher_wait(process, types[index]));
+        assert_true(received[2] && received[3]);
         test_model_close();
     }
 
-    test_model_open(3);
     Message done = test_control_message(DONE);
-    assert_int_equal(0, send(test_model_process(2), 1, &done));
-    assert_int_equal(-1, dispatcher_step(test_model_process(1)));
-    assert_int_equal(EBADMSG, errno);
-    assert_false(test_model_process(1)->barriers.done[2]);
-    test_model_close();
-
     // DONE одного ребёнка не разрешает закрытие канала другого.
     test_model_open(4);
     Process* process = test_model_process(1);
@@ -234,5 +233,41 @@ void test_barrier_senders(void** state) {
     test_model_process(3)->ipc.out[1] = -1;
     assert_int_equal(-1, dispatcher_step(process));
     assert_int_equal(EPIPE, errno);
+    test_model_close();
+}
+
+void test_philosophers_receive_only(void** state) {
+    (void)state;
+    test_model_open(3);
+    Process* low = test_model_process(1);
+    Process* high = test_model_process(2);
+    high->philosopher.state = HUNGRY;
+    assert_int_equal(0, philosophers_service(high));
+    Message message;
+    local_id sender;
+    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(low, &sender, &message));
+    assert_int_equal(0, philosophers_receive(low, sender, &message));
+    assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
+    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(high, &sender, &message));
+
+    assert_int_equal(0, philosophers_service(low));
+    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(CS_REPLY, message.s_header.s_type);
+    test_model_close();
+
+    // Один шаг диспетчера делает одну попытку обслуживания после приёма.
+    test_model_open(3);
+    low = test_model_process(1);
+    high = test_model_process(2);
+    high->philosopher.state = HUNGRY;
+    assert_int_equal(0, philosophers_service(high));
+    test_write_inject(low->ipc.out[2], MAX_MESSAGE_LEN, 0, 1);
+    assert_int_equal(0, dispatcher_step(low));
+    assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
+    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(0, dispatcher_step(low));
+    assert_false(low->philosopher.fork[2]);
+    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(high, &sender, &message));
+    test_write_reset();
     test_model_close();
 }

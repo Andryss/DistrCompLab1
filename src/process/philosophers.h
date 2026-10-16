@@ -12,7 +12,8 @@ void philosophers_initialize(Process* process);
 /** Обслуживает запросы вне КС; возвращает 0 при успехе, -1 при ошибке отправки. */
 int philosophers_service(Process* process);
 
-/** Принимает маркер или вилку; возвращает -1 при нарушении протокола либо ошибке IPC. */
+/** Обновляет состояние без отправок; -1 при нарушении протокола.
+ * sender — ID другого процесса из IPC, в пределах [0, count). */
 int philosophers_receive(Process* process, local_id sender, const Message* message);
 
 /** Проверяет наличие всех нужных вилок и отсутствие пар «грязная вилка + маркер». */

@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test_setup_teardown(test_ipc_closed_channels, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_philosophers_receive_only, setup, teardown),
         cmocka_unit_test_setup_teardown(test_ipc_wire_format, setup, teardown),
         cmocka_unit_test_setup_teardown(test_ipc_empty_and_maximum_payload, setup, teardown),
         cmocka_unit_test_setup_teardown(test_ipc_multicast, setup, teardown),
