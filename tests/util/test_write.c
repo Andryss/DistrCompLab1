@@ -24,12 +24,12 @@ ssize_t test_write(int fd, const void* bytes, size_t size) {
     if (fd == target) {
         if (interrupted > 0) {
             --interrupted;
-            errno = EINTR;
+            errno = EINTR; // Имитируем прерывание до записи байтов.
             return -1;
         }
         if (blocked > 0) {
             --blocked;
-            errno = EAGAIN;
+            errno = EAGAIN; // Имитируем заполненный канал без частичной записи.
             return -1;
         }
         if (size > chunk) {

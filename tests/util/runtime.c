@@ -1,12 +1,36 @@
 #include "platform.h"
 #include "pa2345.h"
-#include "io.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+/** Дописывает тестовый вывод, повторяя запись после EINTR.
+ * При -1 errno: EIO — запись 0 байт; иначе ошибка write(). */
+static int io_write_all(int descriptor, const void* data, size_t size) {
+    const unsigned char* bytes = data;
+
+    while (size > 0) {
+        ssize_t result = write(descriptor, bytes, size);
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (result == 0) {
+            errno = EIO;
+            return -1;
+        }
+        bytes += (size_t)result;
+        size -= (size_t)result;
+    }
+
+    return 0;
+}
 
 /** Пишет одну отметку входа или выхода; ошибка тестового runtime завершает ребёнка. */
 static void write_trace_event(int descriptor, char operation, int id) {

@@ -6,6 +6,7 @@ APP_NAME ?= pa6
 DOCKER_IMAGE ?= $(APP_NAME):local
 DOCKER_ARGS ?= -p 5 --mutexl
 BUILD_DIR ?= build
+DOCKER_LOG_DIR := $(BUILD_DIR)/docker
 TEST_BUILD_DIR := $(BUILD_DIR)/sanitizers
 DIST_DIR := $(BUILD_DIR)/dist
 PACKAGE_DIR := $(DIST_DIR)/$(APP_NAME)
@@ -59,7 +60,10 @@ mock: $(MOCK_APP_BINARY)
 # Оригинальная библиотека рассчитана на Linux x86-64, включая запуск с Apple Silicon.
 docker:
 	$(DOCKER) build --platform linux/amd64 --build-arg APP_NAME="$(APP_NAME)" -t "$(DOCKER_IMAGE)" .
-	$(DOCKER) run --rm --init --platform linux/amd64 "$(DOCKER_IMAGE)" $(DOCKER_ARGS)
+	mkdir -p "$(DOCKER_LOG_DIR)"
+	$(DOCKER) run --rm --init --platform linux/amd64 \
+		--volume "$(abspath $(DOCKER_LOG_DIR)):/logs" --workdir /logs \
+		"$(DOCKER_IMAGE)" $(DOCKER_ARGS)
 
 runtime: $(RUNTIME_LIB)
 

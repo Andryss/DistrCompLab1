@@ -1,6 +1,10 @@
-#include "ipc_transport.h"
+#include "process.h"
+#include <errno.h>
+#include <sched.h>
+#include <unistd.h>
 
-/** Устанавливает errno и возвращает единый код ошибки IPC. */
+/** Возвращает -1 с указанной причиной ошибки.
+ * Записывает error в errno; причину определяет вызывающий код. */
 static int fail(int error) {
     errno = error;
     return -1;
@@ -18,32 +22,18 @@ static int valid_message(const Message* message) {
         && message->s_header.s_payload_len <= MAX_PAYLOAD_LEN;
 }
 
-/** Не занимает CPU непрерывным опросом, когда во входящих каналах нет данных. */
-void ipc_pause(void) {
-    struct timespec delay = {0, 1000000L};
-    while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {
-        // Продолжаем оставшуюся часть паузы после сигнала.
-    }
-}
-
-/** Записывает байты напрямую, повторяя только прерванный системный вызов. */
-static ssize_t write_bytes(int descriptor, const void* bytes, size_t size) {
-    ssize_t written;
-    do {
-        written = write(descriptor, bytes, size);
-    } while (written < 0 && errno == EINTR);
-    return written;
-}
-
-/** Атомарная отправка; при EAGAIN кадр не записан и его можно повторить. */
+/** Атомарно отправляет сообщение в канал получателя.
+ * При -1 errno: EINVAL — параметры/лимит, EMSGSIZE — размер, EIO — короткая запись; иначе ошибка fpathconf()/write(). */
 int send(void* self, local_id dst, const Message* message) {
     Process* process = self;
     if (!valid_peer(process, dst) || !valid_message(message)) {
         return fail(EINVAL);
     }
     size_t size = sizeof(MessageHeader) + message->s_header.s_payload_len;
+    int descriptor = process->ipc.descriptors[process->id][dst][PIPE_WRITE];
+    // Отличаем ошибку fpathconf() от неопределённого PIPE_BUF (его считаем EINVAL).
     errno = 0;
-    long limit = fpathconf(process->ipc.descriptors[process->id][dst][PIPE_WRITE], _PC_PIPE_BUF);
+    long limit = fpathconf(descriptor, _PC_PIPE_BUF);
     if (limit < 0) {
         return fail(errno != 0 ? errno : EINVAL);
     }
@@ -51,8 +41,12 @@ int send(void* self, local_id dst, const Message* message) {
         return fail(EMSGSIZE);
     }
 
-    ssize_t written = write_bytes(process->ipc.descriptors[process->id][dst][PIPE_WRITE], message, size);
+    ssize_t written;
+    do {
+        written = write(descriptor, message, size);
+    } while (written < 0 && errno == EINTR);
     if (written < 0) {
+        // EAGAIN/EWOULDBLOCK — места нет, отправку можно повторить; EPIPE — нет читателя.
         return -1;
     }
     if ((size_t)written != size) {
@@ -62,7 +56,8 @@ int send(void* self, local_id dst, const Message* message) {
     return 0;
 }
 
-/** После частичной рассылки повторять её целиком нельзя. */
+/** Рассылает сообщение всем другим процессам; частичную рассылку целиком не повторяют.
+ * При -1 errno: EINVAL — неверный кадр; иначе первая ошибка send(). */
 int send_multicast(void* self, const Message* message) {
     Process* process = self;
     if (!valid_message(message)) {
@@ -80,134 +75,99 @@ int send_multicast(void* self, const Message* message) {
     return 0;
 }
 
-/** EOF посреди кадра означает повреждённое сообщение, а не чистое закрытие. */
-static int finish_channel(int* descriptor, const ReceiveState* state) {
-    if (state->used > 0) {
-        return fail(EBADMSG);
-    }
-    close(*descriptor);
-    *descriptor = -1;
-    return RECEIVE_CLOSED;
-}
-
-/** Читает только оставшуюся часть заголовка или тела, не затрагивая следующий кадр. */
-static int read_fragment(int* descriptor, ReceiveState* state, size_t target) {
-    unsigned char* buffer = (unsigned char*)&state->message;
-    for (;;) {
-        ssize_t received = read(*descriptor, buffer + state->used, target - state->used);
+/** Дочитывает начатый кадр до нужного размера.
+ * При -1 errno: EAGAIN/EWOULDBLOCK — пусто до первого байта, EPIPE — EOF между кадрами, EBADMSG — EOF внутри; иначе ошибка read(). */
+static int read_bytes(int* descriptor, Message* message, size_t* used, size_t target) {
+    unsigned char* buffer = (unsigned char*)message;
+    while (*used < target) {
+        ssize_t received = read(*descriptor, buffer + *used, target - *used);
         if (received > 0) {
-            state->used += (size_t)received;
-            return RECEIVE_COMPLETE;
+            *used += (size_t)received;
+            continue;
         }
         if (received == 0) {
-            return finish_channel(descriptor, state);
+            if (*used > 0) {
+                return fail(EBADMSG);
+            }
+            close(*descriptor);
+            *descriptor = -1;
+            return fail(EPIPE);
         }
         if (errno == EINTR) {
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return RECEIVE_PENDING;
+            if (*used == 0) {
+                return -1;
+            }
+            sched_yield();
+            continue;
         }
 
-        return RECEIVE_ERROR;
+        return -1;
     }
+    return 0;
 }
 
-/** Собирает полный кадр; неполный кадр остаётся в состоянии его отправителя. */
+/** Читает заголовок и тело, дочитывая начатый кадр целиком.
+ * При -1 errno: EBADMSG — неверный заголовок, EPIPE — закрытый вход; иначе ошибка read_bytes(). */
 static int read_frame(Process* process, int sender, Message* message) {
-    ReceiveState* state = &process->ipc.rx[sender];
-    if (process->ipc.descriptors[sender][process->id][PIPE_READ] < 0) {
-        return RECEIVE_CLOSED;
+    int* descriptor = &process->ipc.descriptors[sender][process->id][PIPE_READ];
+    if (*descriptor < 0) {
+        return fail(EPIPE);
     }
 
-    for (;;) {
-        size_t target = sizeof(MessageHeader);
-        if (state->used >= target) {
-            if (!valid_message(&state->message)) {
-                return fail(EBADMSG);
-            }
-            target += state->message.s_header.s_payload_len;
-            if (state->used == target) {
-                memcpy(message, &state->message, target);
-                state->used = 0;
-                return RECEIVE_COMPLETE;
-            }
-        }
-
-        int result = read_fragment(&process->ipc.descriptors[sender][process->id][PIPE_READ], state, target);
-        if (result != RECEIVE_COMPLETE) {
-            return result;
-        }
+    size_t used = 0;
+    int result = read_bytes(descriptor, message, &used, sizeof(MessageHeader));
+    if (result < 0) {
+        return result;
     }
+    if (!valid_message(message)) {
+        return fail(EBADMSG);
+    }
+    return read_bytes(descriptor, message, &used, sizeof(MessageHeader) + message->s_header.s_payload_len);
 }
 
-/** Не ждёт данных: EAGAIN — кадр не собран, EPIPE — канал закрыт. */
+/** Принимает сообщение от указанного отправителя.
+ * При -1 errno: EINVAL — from/NULL, EAGAIN/EWOULDBLOCK — пусто, EPIPE — вход закрыт, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
 int receive(void* self, local_id from, Message* message) {
     Process* process = self;
     if (!valid_peer(process, from) || message == NULL) {
         return fail(EINVAL);
     }
 
-    int result = read_frame(process, from, message);
-    if (result == RECEIVE_COMPLETE) {
-        return 0;
-    }
-    if (result == RECEIVE_ERROR) {
-        return -1;
-    }
-    return fail(result == RECEIVE_CLOSED ? EPIPE : EAGAIN);
+    return read_frame(process, from, message);
 }
 
-/** Делает один круг по открытым каналам и возвращает сообщение либо новое закрытие. */
-int ipc_receive_step(Process* process, local_id* source, Message* message) {
-    for (int step = 0; step < process->count; ++step) {
-        int sender = (process->ipc.next_peer + step) % process->count;
-        if (sender == process->id || process->ipc.descriptors[sender][process->id][PIPE_READ] < 0) {
-            continue;
-        }
-
-        int result = read_frame(process, sender, message);
-        if (result == RECEIVE_COMPLETE || result == RECEIVE_CLOSED) {
-            *source = (local_id)sender;
-            process->ipc.next_peer = (sender + 1) % process->count;
-            return result;
-        }
-        if (result == RECEIVE_ERROR) {
-            return RECEIVE_ERROR;
-        }
-    }
-    return RECEIVE_PENDING;
-}
-
-/** Проверяет, может ли публичный receive_any() ещё дождаться сообщения. */
-static int has_open_channels(const Process* process) {
-    for (int peer = 0; peer < process->count; ++peer) {
-        if (peer != process->id && process->ipc.descriptors[peer][process->id][PIPE_READ] >= 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/** Не ждёт данных: EAGAIN — нет полного кадра, EPIPE — закрыты все входы. */
+/** Принимает сообщение круговым обходом, сохраняя отправителя сообщения/ошибки в ReceiveContext.
+ * При -1 errno: EAGAIN — все входы пусты, EINVAL — NULL, EPIPE — закрыт вход или все входы, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
 int receive_any(void* self, Message* message) {
     Process* process = self;
+    ReceiveContext* context = &process->ipc.receive;
+    context->sender = -1;
     if (message == NULL) {
         return fail(EINVAL);
     }
 
-    local_id sender;
-    int result;
-    // Закрытие одного канала не должно скрывать сообщения остальных.
-    do {
-        result = ipc_receive_step(process, &sender, message);
-    } while (result == RECEIVE_CLOSED);
+    int open_channels = 0;
+    for (int step = 0; step < process->count; ++step) {
+        int sender = (context->next_peer + step) % process->count;
+        if (sender == process->id || process->ipc.descriptors[sender][process->id][PIPE_READ] < 0) {
+            continue;
+        }
 
-    if (result == RECEIVE_COMPLETE) {
-        return 0;
+        ++open_channels;
+        int result = read_frame(process, sender, message);
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            continue;
+        }
+        context->sender = (local_id)sender;
+        context->next_peer = (sender + 1) % process->count;
+        return result;
     }
-    if (result == RECEIVE_ERROR) {
-        return -1;
+    if (open_channels == 0) {
+        return fail(EPIPE);
     }
-    return fail(has_open_channels(process) ? EAGAIN : EPIPE);
+    sched_yield();
+    return fail(EAGAIN);
 }

@@ -4,23 +4,23 @@
 #ifndef DISTR_PROTOCOL_H
 #define DISTR_PROTOCOL_H
 
-#include "platform.h"
-#include <errno.h>
-#include <stdio.h>
-#include <unistd.h>
-#include "logging.h"
 #include "process.h"
+#include "logging.h"
 
-/** Обрабатывает один кадр и обслуживает запросы философов; возвращает 0 либо -1 при ошибке. */
+/** Обрабатывает доступный кадр и запросы (вызывается в родителе и детях).
+ * При -1 errno: EPIPE — закрытие до DONE ребёнка, EBADMSG — нарушение протокола; иначе ошибка IPC; EAGAIN/EWOULDBLOCK допустимы. */
 int protocol_step(Process* process);
 
-/** Ожидает STARTED или DONE от всех других детей, продолжая обслуживать IPC. */
+/** Ожидает STARTED/DONE от всех других детей.
+ * При -1 errno сохраняет ошибку protocol_step(). */
 int protocol_wait(Process* process, MessageType type);
 
-/** Выполняет стартовый барьер, полезную работу и завершающий барьер ребёнка. */
+/** Проходит барьеры и выполняет полезную работу (вызывается только в ребёнке).
+ * При -1 errno сохраняет ошибку IPC, протокола или логирования. */
 int protocol_run_child(Process* process, const Logs* logs);
 
-/** Получает STARTED и DONE от всех детей; родитель ничего не рассылает. */
+/** Ожидает STARTED/DONE от всех детей (вызывается только в родителе).
+ * При -1 errno сохраняет ошибку protocol_wait(). */
 int protocol_run_parent(Process* process);
 
 #endif // DISTR_PROTOCOL_H

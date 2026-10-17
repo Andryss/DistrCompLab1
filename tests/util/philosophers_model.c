@@ -1,7 +1,6 @@
 #include "philosophers_model.h"
 #include "test_support.h"
 #include "philosophers.h"
-#include "ipc_transport.h"
 #include "channels.h"
 
 /** Ограничения размера управляемой модели. */
@@ -77,15 +76,16 @@ Message test_control_message(int type) {
 
 /** Переносит кадры из транспорта в управляемые очереди доставки. */
 static void collect_messages(int id) {
-    local_id sender;
     Message message;
     int result;
-    while ((result = ipc_receive_step(&processes[id], &sender, &message)) == RECEIVE_COMPLETE) {
+    while ((result = receive_any(&processes[id], &message)) == 0) {
+        local_id sender = processes[id].ipc.receive.sender;
         Mailbox* mailbox = &mail[sender][id];
         assert_true(mailbox->count < MAILBOX_SIZE);
         mailbox->type[mailbox->count++] = message.s_header.s_type;
     }
-    assert_int_equal(0, result);
+    assert_int_equal(-1, result);
+    assert_int_equal(EAGAIN, errno);
 }
 
 /** Проверяет единственность вилки и маркера на ребре, включая сообщения в пути. */

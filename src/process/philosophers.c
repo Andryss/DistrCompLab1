@@ -4,7 +4,8 @@
 #include <errno.h>
 #include <stdio.h>
 
-/** Отправляет пустое сообщение, передающее вилку либо маркер запроса. */
+/** Передаёт вилку или маркер: 0 — отправлено, 1 — отложено.
+ * При 1 errno: EAGAIN/EWOULDBLOCK или EPIPE в THINKING; при -1 — прочая ошибка send(). */
 static int transfer_resource(Process* process, int peer, MessageType type) {
     Message message = { .s_header = {MESSAGE_MAGIC, 0, type, 0} };
     if (send(process, (local_id)peer, &message) == 0) {
@@ -12,14 +13,14 @@ static int transfer_resource(Process* process, int peer, MessageType type) {
     }
     if (errno == EAGAIN || errno == EWOULDBLOCK
         || (errno == EPIPE && process->philosopher.state == THINKING)) {
-        // Закрывшийся сосед уже не нуждается в ответе на старый запрос.
-        // Продолжаем приём: его DONE ещё может находиться во входящем канале.
+        // Продолжаем приём: DONE закрывшегося соседа ещё может находиться в канале.
         return 1;
     }
     return -1;
 }
 
-/** Передаёт запрошенную грязную вилку; владение снимается после успешной записи. */
+/** Передаёт запрошенную грязную вилку, снимая владение при успехе.
+ * При 1 (отложено) или -1 errno сохраняет причину из transfer_resource(). */
 static int release_requested_fork(Process* process, int peer) {
     ProcessPhilosopher* philosopher = &process->philosopher;
     if (!philosopher->fork[peer] || !philosopher->dirty[peer] || !philosopher->req[peer]) {
@@ -34,7 +35,8 @@ static int release_requested_fork(Process* process, int peer) {
     return 0;
 }
 
-/** Запрашивает отсутствующую вилку только при наличии её маркера запроса. */
+/** Запрашивает отсутствующую вилку при наличии маркера.
+ * При 1 (отложено) или -1 errno сохраняет причину из transfer_resource(). */
 static int request_missing_fork(Process* process, int peer) {
     ProcessPhilosopher* philosopher = &process->philosopher;
     if (philosopher->state != HUNGRY ||
@@ -93,6 +95,7 @@ int philosophers_service(Process* process) {
 int philosophers_receive(Process* process, local_id sender, const Message* message) {
     if (sender == PARENT_ID || process->id == PARENT_ID
         || !process->philosopher.enabled || message->s_header.s_payload_len != 0) {
+        // EBADMSG: обмен разрешён между детьми, при --mutexl и пустом теле.
         errno = EBADMSG;
         return -1;
     }
@@ -104,6 +107,7 @@ int philosophers_receive(Process* process, local_id sender, const Message* messa
         philosopher->fork[sender] = 1;
         philosopher->dirty[sender] = 0;
     } else {
+        // EBADMSG: неизвестный тип или повторная передача уже имеющейся вилки/маркера.
         errno = EBADMSG;
         return -1;
     }
@@ -125,12 +129,6 @@ int philosophers_ready(const Process* process) {
 
 int request_cs(const void* self) {
     Process* process = (Process*)self;
-    if (process->id == PARENT_ID ||
-        process->philosopher.state != THINKING) {
-        errno = EINVAL;
-        return -1;
-    }
-
     process->philosopher.state = HUNGRY;
     if (philosophers_service(process) < 0) {
         return -1;
@@ -146,16 +144,12 @@ int request_cs(const void* self) {
 
 int release_cs(const void* self) {
     Process* process = (Process*)self;
-    if (process->philosopher.state != EATING) {
-        errno = EINVAL;
-        return -1;
-    }
-
     process->philosopher.state = THINKING;
     return philosophers_service(process);
 }
 
-/** Печатает одну строку, при необходимости защищая ровно этот вызов print(). */
+/** Печатает строку итерации, защищая print() при --mutexl (вызывается только в ребёнке).
+ * При -1 errno: EIO — ошибка/усечение snprintf(); иначе ошибка входа в КС или выхода из неё. */
 static int print_iteration(Process* process, int iteration, int total) {
     char line[128];
     int length = snprintf(line, sizeof(line), log_loop_operation_fmt,

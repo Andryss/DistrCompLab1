@@ -1,4 +1,16 @@
-#include "main.h"
+#include "platform.h"
+#include "runtime.h"
+#include "ipc.h"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/** Проверенные параметры запуска программы. */
+typedef struct {
+    int child_count; /**< Число дочерних процессов без родителя. */
+    int mutex_enabled; /**< Признак защиты каждого print() алгоритмом философов. */
+} LaunchOptions;
 
 /** Проверяет десятичное число детей без знака и посторонних символов. */
 static int parse_child_count(const char* number) {
@@ -7,6 +19,7 @@ static int parse_child_count(const char* number) {
     }
 
     char* end;
+    // Отличаем ERANGE от strtol() при переполнении от прежнего значения errno.
     errno = 0;
     long child_count = strtol(number, &end, 10);
     if (errno == ERANGE || *end != '\0' || child_count > MAX_PROCESS_ID) {

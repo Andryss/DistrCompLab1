@@ -4,13 +4,6 @@
 #ifndef DISTR_LOGGING_H
 #define DISTR_LOGGING_H
 
-#include "platform.h"
-#include "common.h"
-#include "io.h"
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <unistd.h>
 #include <stddef.h>
 
 /** Файлы логов, открытые родителем и наследуемые дочерними процессами. */
@@ -19,19 +12,24 @@ typedef struct {
     int pipes_fd; /**< Дескриптор pipes.log; закрывается до создания детей. */
 } Logs;
 
-/** Открывает и очищает оба лога; при частичной ошибке ресурсы освобождает logs_close(). */
+/** Открывает логи (вызывается только в родителе до fork()).
+ * При -1 errno сохраняет ошибку open(); открытые файлы нужно закрыть через logs_close(). */
 int logs_open(Logs* logs);
 
-/** Закрывает лог каналов после создания топологии. */
+/** Закрывает лог топологии (вызывается только в родителе до fork()).
+ * При -1 errno сохраняет ошибку close(). */
 int logs_close_pipes(Logs* logs);
 
-/** Закрывает оставшиеся логи; возвращает -1 при ошибке закрытия. */
+/** Закрывает свои дескрипторы логов (вызывается в каждом процессе).
+ * При -1 errno сохраняет первую ошибку close(). */
 int logs_close(Logs* logs);
 
-/** Записывает готовую строку события в events.log и stdout. */
+/** Пишет событие в events.log и stdout.
+ * При -1 errno: EIO — запись 0 байт; иначе ошибка write(). */
 int log_event(const Logs* logs, const char* text, size_t length);
 
-/** Записывает направление канала и оба его дескриптора в pipes.log. */
+/** Записывает канал в лог топологии (вызывается только в родителе).
+ * При -1 errno: EIO — ошибка/усечение snprintf() или запись 0 байт; иначе ошибка write(). */
 int log_channel(const Logs* logs, int source, int destination, int read_fd, int write_fd);
 
 #endif // DISTR_LOGGING_H

@@ -1,6 +1,9 @@
 #include "channels.h"
+#include <fcntl.h>
+#include <unistd.h>
 
 void channels_initialize(Process* process) {
+    process->ipc.receive = (ReceiveContext){.sender = -1, .next_peer = 0};
     for (int source = 0; source < PROCESS_LIMIT; ++source) {
         for (int destination = 0; destination < PROCESS_LIMIT; ++destination) {
             process->ipc.descriptors[source][destination][PIPE_READ] = -1;
@@ -9,7 +12,8 @@ void channels_initialize(Process* process) {
     }
 }
 
-/** Создаёт pipe и включает неблокирующий режим обоих концов до fork(). */
+/** Создаёт неблокирующий pipe (вызывается только в родителе до fork()).
+ * При -1 errno сохраняет ошибку pipe() или fcntl(). */
 static int create_channel(int descriptors[2]) {
     if (pipe(descriptors) < 0) {
         return -1;

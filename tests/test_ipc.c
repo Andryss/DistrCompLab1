@@ -1,6 +1,5 @@
 #include "platform.h"
 #include "process.h"
-#include "ipc_transport.h"
 #include "channels.h"
 #include "test_write.h"
 #include "test_cases.h"
@@ -10,8 +9,12 @@
 #include <setjmp.h>
 #include <cmocka.h>
 
+#include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static Process peers[3];
@@ -125,26 +128,16 @@ void test_ipc_receive_pending(void** state) {
     (void)state;
     alarm(5); // Блокирующий приём должен завершить тест по таймауту.
     connect_peers(1, 0);
-    Message message = make_message("fragment"), received;
+    Message message = make_message("ready"), received;
 
     assert_int_equal(-1, receive(&peers[0], 1, &received));
     assert_int_equal(EAGAIN, errno);
 
-    int writer = peers[1].ipc.descriptors[1][0][PIPE_WRITE];
-    assert_int_equal(3, write(writer, &message, 3));
-    assert_int_equal(-1, receive(&peers[0], 1, &received));
-    assert_int_equal(EAGAIN, errno);
-
-    size_t fragment = sizeof(MessageHeader) - 3 + 2;
-    assert_int_equal(fragment, write(writer, (char*)&message + 3, fragment));
-    assert_int_equal(-1, receive(&peers[0], 1, &received));
-    assert_int_equal(EAGAIN, errno);
-
-    assert_int_equal(6, write(writer, message.s_payload + 2, 6));
+    assert_int_equal(0, send(&peers[1], 0, &message));
     Message next = make_message("next");
     assert_int_equal(0, send(&peers[1], 0, &next));
     assert_int_equal(0, receive(&peers[0], 1, &received));
-    assert_payload(&received, "fragment");
+    assert_payload(&received, "ready");
     assert_int_equal(0, receive(&peers[0], 1, &received));
     assert_payload(&received, "next");
     assert_int_equal(-1, receive(&peers[0], 1, &received));
@@ -160,15 +153,21 @@ void test_ipc_receive_any_pending(void** state) {
 
     assert_int_equal(-1, receive_any(&peers[0], &received));
     assert_int_equal(EAGAIN, errno);
+    assert_int_equal(-1, peers[0].ipc.receive.sender);
 
-    // EOF первого отправителя не скрывает готовое сообщение второго.
+    // EOF сообщается отдельно; следующий вызов получает кадр другого отправителя.
     assert_int_equal(0, send(&peers[2], 0, &message));
     close(peers[1].ipc.descriptors[1][0][PIPE_WRITE]);
     peers[1].ipc.descriptors[1][0][PIPE_WRITE] = -1;
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
+    assert_int_equal(1, peers[0].ipc.receive.sender);
     assert_int_equal(0, receive_any(&peers[0], &received));
+    assert_int_equal(2, peers[0].ipc.receive.sender);
     assert_payload(&received, "still open");
     assert_int_equal(-1, receive_any(&peers[0], &received));
     assert_int_equal(EAGAIN, errno);
+    assert_int_equal(-1, peers[0].ipc.receive.sender);
 
     close(peers[2].ipc.descriptors[2][0][PIPE_WRITE]);
     peers[2].ipc.descriptors[2][0][PIPE_WRITE] = -1;
@@ -176,37 +175,51 @@ void test_ipc_receive_any_pending(void** state) {
     assert_int_equal(EPIPE, errno);
 }
 
+/** Дописывает кадр с задержкой, отправляет следующий и завершается (вызывается только в ребёнке). */
+static void send_delayed_tail(const Message* message, size_t used) {
+    struct timespec delay = {0, 20000000L};
+    while (nanosleep(&delay, &delay) < 0 && errno == EINTR) { }
+    int writer = peers[1].ipc.descriptors[1][0][PIPE_WRITE];
+    size_t remaining = sizeof(MessageHeader) + message->s_header.s_payload_len - used;
+    if (write(writer, (const char*)message + used, remaining) != (ssize_t)remaining) {
+        _exit(EXIT_FAILURE);
+    }
+    Message next = make_message("next");
+    _exit(send(&peers[1], 0, &next) == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+
 void test_ipc_partial_reception(void** state) {
     (void)state;
     alarm(5);
     connect_peers(1, 0);
-    connect_peers(2, 0);
-    Message partial = make_message("fragment");
-    Message ready = make_message("ready");
-    Message received;
+    Message message = make_message("fragment"), received;
+    size_t fragments[] = {3, sizeof(MessageHeader), sizeof(MessageHeader) + 2};
+    for (int any = 0; any < 2; ++any) {
+        for (size_t index = 0; index < sizeof(fragments) / sizeof(fragments[0]); ++index) {
+            size_t used = fragments[index];
+            assert_int_equal(used, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], &message, used));
+            pid_t child = fork();
+            assert_true(child >= 0);
+            if (child == 0) {
+                send_delayed_tail(&message, used);
+            }
 
-    assert_int_equal(0, send(&peers[2], 0, &ready));
-    assert_int_equal(0, receive_any(&peers[0], &received));
-    assert_payload(&received, "ready");
-
-    assert_int_equal(3, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], &partial, 3));
-    assert_int_equal(-1, receive_any(&peers[0], &received));
-    assert_int_equal(EAGAIN, errno);
-    assert_int_equal(0, send(&peers[2], 0, &ready));
-    assert_int_equal(0, receive_any(&peers[0], &received));
-    assert_payload(&received, "ready");
-
-    size_t fragment = sizeof(MessageHeader) - 3 + 2;
-    assert_int_equal(fragment, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], (char*)&partial + 3, fragment));
-    assert_int_equal(-1, receive_any(&peers[0], &received));
-    assert_int_equal(EAGAIN, errno);
-    assert_int_equal(0, send(&peers[2], 0, &ready));
-    assert_int_equal(0, receive_any(&peers[0], &received));
-    assert_payload(&received, "ready");
-
-    assert_int_equal(6, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], partial.s_payload + 2, 6));
-    assert_int_equal(0, receive(&peers[0], 1, &received));
-    assert_payload(&received, "fragment");
+            int result = any ? receive_any(&peers[0], &received) : receive(&peers[0], 1, &received);
+            int status;
+            pid_t waited;
+            do {
+                waited = waitpid(child, &status, 0);
+            } while (waited < 0 && errno == EINTR);
+            assert_int_equal(child, waited);
+            assert_true(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+            assert_int_equal(0, result);
+            assert_payload(&received, "fragment");
+            assert_int_equal(0, receive(&peers[0], 1, &received));
+            assert_payload(&received, "next");
+            assert_int_equal(-1, receive_any(&peers[0], &received));
+            assert_int_equal(EAGAIN, errno);
+        }
+    }
 }
 
 void test_ipc_round_robin(void** state) {
@@ -222,10 +235,13 @@ void test_ipc_round_robin(void** state) {
 
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "busy");
+    assert_int_equal(1, peers[0].ipc.receive.sender);
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "other");
+    assert_int_equal(2, peers[0].ipc.receive.sender);
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "busy");
+    assert_int_equal(1, peers[0].ipc.receive.sender);
 }
 
 
@@ -264,10 +280,10 @@ void test_ipc_backpressure(void** state) {
                 assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
             }
         }
-        local_id sender;
-        int result = ipc_receive_step(&peers[1], &sender, &received);
-        assert_true(result >= 0);
-        if (result == RECEIVE_COMPLETE) {
+        int result = receive_any(&peers[1], &received);
+        assert_true(result == 0 || errno == EAGAIN);
+        if (result == 0) {
+            assert_int_equal(0, peers[1].ipc.receive.sender);
             int actual;
             memcpy(&actual, received.s_payload, sizeof(actual));
             assert_int_equal(expected, actual);
@@ -287,16 +303,17 @@ void test_ipc_atomic_writes(void** state) {
     test_write_inject(peers[0].ipc.descriptors[0][1][PIPE_WRITE], MAX_MESSAGE_LEN, 1, 1);
     Message message = make_message("atomic message");
     Message received;
-    local_id sender;
 
     // EINTR повторяется, EAGAIN не оставляет в канале ни одного байта.
     assert_int_equal(-1, send(&peers[0], 1, &message));
     assert_int_equal(EAGAIN, errno);
-    assert_int_equal(0, ipc_receive_step(&peers[1], &sender, &received));
+    assert_int_equal(-1, receive_any(&peers[1], &received));
+    assert_int_equal(EAGAIN, errno);
     assert_int_equal(0, send(&peers[0], 1, &message));
     assert_int_equal(0, receive(&peers[1], 0, &received));
     assert_payload(&received, "atomic message");
-    assert_int_equal(0, ipc_receive_step(&peers[1], &sender, &received));
+    assert_int_equal(-1, receive_any(&peers[1], &received));
+    assert_int_equal(EAGAIN, errno);
 
     // При меньшем платформенном пределе слишком большой кадр отклоняется целиком.
     size_t payload = atomic_payload_limit(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
@@ -304,7 +321,8 @@ void test_ipc_atomic_writes(void** state) {
         message.s_header.s_payload_len = (uint16_t)(payload + 1);
         assert_int_equal(-1, send(&peers[0], 1, &message));
         assert_int_equal(EMSGSIZE, errno);
-        assert_int_equal(0, ipc_receive_step(&peers[1], &sender, &received));
+        assert_int_equal(-1, receive_any(&peers[1], &received));
+        assert_int_equal(EAGAIN, errno);
     }
 
     // Искусственное нарушение гарантии должно завершиться ошибкой, а не дописыванием.
@@ -336,6 +354,14 @@ void test_ipc_errors(void** state) {
     close(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
     peers[0].ipc.descriptors[0][1][PIPE_WRITE] = -1;
     assert_int_equal(-1, receive(&peers[1], 0, &received));
+    assert_int_equal(EBADMSG, errno);
+
+    connect_peers(2, 1);
+    size_t fragment = sizeof(MessageHeader) + 2;
+    assert_int_equal(fragment, write(peers[2].ipc.descriptors[2][1][PIPE_WRITE], &message, fragment));
+    close(peers[2].ipc.descriptors[2][1][PIPE_WRITE]);
+    peers[2].ipc.descriptors[2][1][PIPE_WRITE] = -1;
+    assert_int_equal(-1, receive(&peers[1], 2, &received));
     assert_int_equal(EBADMSG, errno);
 }
 
@@ -427,22 +453,31 @@ void test_ipc_closed_channels(void** state) {
     peers[1].ipc.descriptors[1][0][PIPE_WRITE] = -1;
 
     Message message = make_message("still open"), received;
-    local_id sender = -1;
-    assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
-    assert_int_equal(1, sender);
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
+    assert_int_equal(1, peers[0].ipc.receive.sender);
     assert_int_equal(-1, peers[0].ipc.descriptors[1][0][PIPE_READ]);
     assert_int_equal(-1, fcntl(closed_descriptor, F_GETFD));
     assert_int_equal(EBADF, errno);
-    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EAGAIN, errno);
+    assert_int_equal(-1, peers[0].ipc.receive.sender);
     assert_int_equal(0, send(&peers[2], 0, &message));
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "still open");
+    assert_int_equal(2, peers[0].ipc.receive.sender);
+    assert_int_equal(-1, receive_any(&peers[0], NULL));
+    assert_int_equal(EINVAL, errno);
+    assert_int_equal(-1, peers[0].ipc.receive.sender);
 
     close(peers[2].ipc.descriptors[2][0][PIPE_WRITE]);
     peers[2].ipc.descriptors[2][0][PIPE_WRITE] = -1;
-    assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
-    assert_int_equal(2, sender);
-    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
+    assert_int_equal(2, peers[0].ipc.receive.sender);
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
+    assert_int_equal(-1, peers[0].ipc.receive.sender);
     assert_int_equal(-1, receive(&peers[0], 1, &received));
     assert_int_equal(EPIPE, errno);
     assert_int_equal(-1, receive_any(&peers[0], &received));

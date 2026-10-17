@@ -3,7 +3,6 @@
 #include "test_write.h"
 #include "philosophers.h"
 #include "protocol.h"
-#include "ipc_transport.h"
 #include "philosophers_model.h"
 
 void test_philosophers_rules(void** state) {
@@ -18,10 +17,10 @@ void test_philosophers_rules(void** state) {
     assert_false(high->philosopher.req[1]);
     assert_int_equal(0, philosophers_service(high)); /* no duplicate request */
     Message message;
-    local_id sender;
-    assert_int_equal(1, ipc_receive_step(low, &sender, &message));
+    assert_int_equal(0, receive_any(low, &message));
     assert_int_equal(CS_REQUEST, message.s_header.s_type);
-    assert_int_equal(0, ipc_receive_step(low, &sender, &message));
+    assert_int_equal(-1, receive_any(low, &message));
+    assert_int_equal(EAGAIN, errno);
 
     low->philosopher.state = EATING;
     message = test_control_message(CS_REQUEST);
@@ -31,14 +30,14 @@ void test_philosophers_rules(void** state) {
     assert_false(philosophers_ready(low)); /* dirty + request blocks re-entry */
     assert_int_equal(0, release_cs(low));
     assert_false(low->philosopher.fork[2]);
-    assert_int_equal(1, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(0, receive_any(high, &message));
     assert_int_equal(CS_REPLY, message.s_header.s_type);
     assert_int_equal(0, philosophers_receive(high, 1, &message));
     assert_true(high->philosopher.fork[1] && !high->philosopher.dirty[1]);
 
     low->philosopher.state = HUNGRY;
     assert_int_equal(0, philosophers_service(low));
-    assert_int_equal(1, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(0, receive_any(high, &message));
     assert_int_equal(0, philosophers_receive(high, 1, &message));
     assert_true(high->philosopher.req[1] && high->philosopher.fork[1] && !high->philosopher.dirty[1]);
     assert_true(philosophers_ready(high)); /* clean fork kept despite request */
@@ -47,7 +46,7 @@ void test_philosophers_rules(void** state) {
     assert_true(high->philosopher.state == EATING && high->philosopher.dirty[1]);
     assert_int_equal(0, release_cs(high));
     assert_false(high->philosopher.fork[1]);
-    assert_int_equal(1, ipc_receive_step(low, &sender, &message));
+    assert_int_equal(0, receive_any(low, &message));
     assert_int_equal(0, philosophers_receive(low, 2, &message));
     assert_true(philosophers_ready(low));
     test_model_close();
@@ -104,8 +103,7 @@ void test_protocol_lifecycle(void** state) {
     assert_int_equal(0, protocol_wait(test_model_process(1), STARTED));
     assert_int_equal(0, protocol_step(test_model_process(1)));
     Message reply;
-    local_id sender;
-    assert_int_equal(1, ipc_receive_step(test_model_process(2), &sender, &reply));
+    assert_int_equal(0, receive_any(test_model_process(2), &reply));
     assert_int_equal(CS_REPLY, reply.s_header.s_type);
     /* Early DONE is recorded even before the caller enters its DONE barrier. */
     assert_int_equal(0, protocol_step(test_model_process(1)));
@@ -173,12 +171,11 @@ void test_philosophers_backpressure(void** state) {
     test_write_reset();
 
     Message message;
-    local_id sender;
-    assert_int_equal(1, ipc_receive_step(low, &sender, &message));
+    assert_int_equal(0, receive_any(low, &message));
 
     // Грязная вилка остаётся у владельца до начала успешной передачи.
     test_write_inject(low->ipc.descriptors[low->id][2][PIPE_WRITE], MAX_MESSAGE_LEN, 0, 1);
-    assert_int_equal(0, philosophers_receive(low, sender, &message));
+    assert_int_equal(0, philosophers_receive(low, low->ipc.receive.sender, &message));
     assert_int_equal(0, philosophers_service(low));
     assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
     assert_false(philosophers_ready(low));
@@ -186,8 +183,8 @@ void test_philosophers_backpressure(void** state) {
     assert_false(low->philosopher.fork[2]);
     test_write_reset();
 
-    assert_int_equal(1, ipc_receive_step(high, &sender, &message));
-    assert_int_equal(0, philosophers_receive(high, sender, &message));
+    assert_int_equal(0, receive_any(high, &message));
+    assert_int_equal(0, philosophers_receive(high, high->ipc.receive.sender, &message));
     assert_true(high->philosopher.fork[1] && !high->philosopher.dirty[1]);
     assert_true(philosophers_ready(high));
     test_model_close();
@@ -244,14 +241,14 @@ void test_philosophers_receive_only(void** state) {
     high->philosopher.state = HUNGRY;
     assert_int_equal(0, philosophers_service(high));
     Message message;
-    local_id sender;
-    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(low, &sender, &message));
-    assert_int_equal(0, philosophers_receive(low, sender, &message));
+    assert_int_equal(0, receive_any(low, &message));
+    assert_int_equal(0, philosophers_receive(low, low->ipc.receive.sender, &message));
     assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
-    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(-1, receive_any(high, &message));
+    assert_int_equal(EAGAIN, errno);
 
     assert_int_equal(0, philosophers_service(low));
-    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(0, receive_any(high, &message));
     assert_int_equal(CS_REPLY, message.s_header.s_type);
     test_model_close();
 
@@ -264,10 +261,11 @@ void test_philosophers_receive_only(void** state) {
     test_write_inject(low->ipc.descriptors[low->id][2][PIPE_WRITE], MAX_MESSAGE_LEN, 0, 1);
     assert_int_equal(0, protocol_step(low));
     assert_true(low->philosopher.fork[2] && low->philosopher.req[2]);
-    assert_int_equal(RECEIVE_PENDING, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(-1, receive_any(high, &message));
+    assert_int_equal(EAGAIN, errno);
     assert_int_equal(0, protocol_step(low));
     assert_false(low->philosopher.fork[2]);
-    assert_int_equal(RECEIVE_COMPLETE, ipc_receive_step(high, &sender, &message));
+    assert_int_equal(0, receive_any(high, &message));
     test_write_reset();
     test_model_close();
 }

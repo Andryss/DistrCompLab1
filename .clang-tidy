@@ -15,7 +15,7 @@ Checks: >-
   readability-braces-around-statements,
   readability-misleading-indentation
 WarningsAsErrors: '*'
-HeaderFilterRegex: '(^|/)(src/(main\.h|process/.*|ipc/.*|utils/.*)|tests/.*)$'
+HeaderFilterRegex: '(^|/)(src/(process/.*|ipc/.*|utils/.*)|tests/.*)$'
 FormatStyle: none
 CheckOptions:
   bugprone-reserved-identifier.AllowedIdentifiers: '_POSIX_C_SOURCE;_DARWIN_C_SOURCE'

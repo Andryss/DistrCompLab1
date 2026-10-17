@@ -1,9 +1,12 @@
 #include "protocol.h"
 #include "pa1.h"
-#include "ipc_transport.h"
 #include "philosophers.h"
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
 
-/** Направляет полученный кадр обработчику барьеров или философов. */
+/** Направляет кадр обработчику соответствующего типа.
+ * При -1 errno = EBADMSG: неизвестный тип или нарушение протокола философов. */
 static int dispatch_message(Process* process, local_id sender, const Message* message) {
     MessageType type = (MessageType)message->s_header.s_type;
     switch (type) {
@@ -35,26 +38,19 @@ static int barrier_complete(const Process* process, MessageType type) {
 
 int protocol_step(Process* process) {
     Message message;
-    local_id sender;
-    int received = ipc_receive_step(process, &sender, &message);
-    if (received == RECEIVE_ERROR) {
+    int received = receive_any(process, &message);
+    int error = received < 0 ? errno : 0;
+    local_id sender = process->ipc.receive.sender;
+    if (received < 0 && error != EAGAIN && error != EWOULDBLOCK && error != EPIPE) {
         return -1;
     }
-    if (received == RECEIVE_CLOSED && sender != PARENT_ID && !process->barriers.done[sender]) {
-        errno = EPIPE;
+    if (error == EPIPE && sender > PARENT_ID && !process->barriers.done[sender]) {
         return -1;
     }
-    if (received == RECEIVE_COMPLETE && dispatch_message(process, sender, &message) < 0) {
+    if (received == 0 && dispatch_message(process, sender, &message) < 0) {
         return -1;
     }
-    if (philosophers_service(process) < 0) {
-        return -1;
-    }
-
-    if (received == RECEIVE_PENDING) {
-        ipc_pause();
-    }
-    return 0;
+    return philosophers_service(process);
 }
 
 int protocol_wait(Process* process, MessageType type) {
@@ -66,7 +62,8 @@ int protocol_wait(Process* process, MessageType type) {
     return 0;
 }
 
-/** Проверяет результат snprintf и заполняет заголовок готового сообщения. */
+/** Заполняет заголовок сообщения.
+ * При -1 errno = EIO: ошибка snprintf() или усечённое тело. */
 static int prepare_message(Message* message, MessageType type, int length) {
     if (length < 0 || (size_t)length >= sizeof(message->s_payload)) {
         errno = EIO;
@@ -80,7 +77,8 @@ static int prepare_message(Message* message, MessageType type, int length) {
     return 0;
 }
 
-/** Логирует подготовленную строку и рассылает её всем остальным процессам. */
+/** Логирует и рассылает сообщение (вызывается только в ребёнке).
+ * При -1 errno сохраняет ошибку логов, IPC или протокола; EAGAIN/EWOULDBLOCK при отправке повторяет. */
 static int publish_message(Process* process, const Logs* logs, const Message* message) {
     if (log_event(logs, message->s_payload, message->s_header.s_payload_len) < 0) {
         return -1;
@@ -101,7 +99,8 @@ static int publish_message(Process* process, const Logs* logs, const Message* me
     return 0;
 }
 
-/** Формирует и записывает сообщение о завершении барьера. */
+/** Записывает прохождение барьера в лог (вызывается только в ребёнке).
+ * При -1 errno: EIO — ошибка/усечение snprintf() или запись 0 байт; иначе ошибка записи. */
 static int log_barrier(const Process* process, const Logs* logs, const char* format) {
     char line[128];
     int length = snprintf(line, sizeof(line), format, (int)process->id);
@@ -112,7 +111,8 @@ static int log_barrier(const Process* process, const Logs* logs, const char* for
     return log_event(logs, line, (size_t)length);
 }
 
-/** Рассылает STARTED и ожидает запуска всех остальных детей. */
+/** Рассылает STARTED и ждёт остальных детей (вызывается только в ребёнке).
+ * При -1 errno сохраняет ошибку подготовки сообщения, логов, IPC или протокола. */
 static int synchronize_start(Process* process, const Logs* logs) {
     Message message;
     int length = snprintf(message.s_payload, sizeof(message.s_payload), log_started_fmt,
@@ -130,7 +130,8 @@ static int synchronize_start(Process* process, const Logs* logs) {
     return log_barrier(process, logs, log_received_all_started_fmt);
 }
 
-/** Рассылает DONE и ожидает завершения работы всех остальных детей. */
+/** Рассылает DONE и ждёт остальных детей (вызывается только в ребёнке).
+ * При -1 errno сохраняет ошибку подготовки сообщения, логов, IPC или протокола. */
 static int synchronize_finish(Process* process, const Logs* logs) {
     Message message;
     int length = snprintf(message.s_payload, sizeof(message.s_payload), log_done_fmt,

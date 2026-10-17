@@ -1,6 +1,37 @@
+#include "platform.h"
 #include "logging.h"
+#include "common.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
 
-/** Сбрасывает дескриптор даже при ошибке, исключая его повторное закрытие. */
+/** Дописывает блокирующий вывод, повторяя запись после EINTR.
+ * При -1 errno: EIO — запись 0 байт; иначе ошибка write(). */
+static int io_write_all(int descriptor, const void* data, size_t size) {
+    const unsigned char* bytes = data;
+
+    while (size > 0) {
+        ssize_t result = write(descriptor, bytes, size);
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (result == 0) {
+            errno = EIO;
+            return -1;
+        }
+        bytes += (size_t)result;
+        size -= (size_t)result;
+    }
+
+    return 0;
+}
+
+/** Закрывает и сбрасывает дескриптор даже при ошибке.
+ * При -1 errno сохраняет ошибку close(). */
 static int close_log(int* descriptor) {
     if (*descriptor < 0) {
         return 0;
@@ -12,6 +43,7 @@ static int close_log(int* descriptor) {
 }
 
 int logs_open(Logs* logs) {
+    // O_APPEND добавляет каждую запись в конец; 0644 задаёт права rw-r--r-- с учётом umask.
     logs->events_fd = open(events_log, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
     if (logs->events_fd < 0) {
         return -1;

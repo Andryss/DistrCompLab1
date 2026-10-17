@@ -110,31 +110,15 @@
 
 ## Запуск
 
-Команды выполняются из корня проекта. Для локальной сборки на macOS достаточно clang и make. Для тестов дополнительно нужны cmocka и pkg-config (`brew install cmocka pkgconf`), для линтера — clang-tidy.
-
 ```sh
-make mock                             # приложение с заменой print(), без санитайзеров
-./build/mock/pa6 -p 5 --mutexl          # запуск с взаимным исключением
-./build/mock/pa6 -p 5                   # запуск без взаимного исключения
-make docker                           # сборка и запуск в Linux-контейнере: -p 5 --mutexl
-make docker DOCKER_ARGS="-p 3"         # свои параметры запуска в контейнере
-make tests                            # сборка программы и тестов с ASan/UBSan
-make test                             # сборка и запуск тестов
-make lint                             # статический анализ
-make clean                            # удалить build/
+make             # сборка приложения для Linux
+make mock        # сборка с тестовой print()
+make docker      # сборка и запуск в контейнере
+make runtime     # распаковка libruntime.so
+make tests       # сборка программы и тестов с ASan/UBSan
+make test        # сборка и запуск тестов
+make test-linux  # проверка архива в Linux
+make lint        # статический анализ
+make package     # архив build/dist/pa6.tar.gz
+make clean       # удаление build/
 ```
-
-Цели `mock` и `tests` используют замену `print()` из `tests/util/runtime.c`, которая выводит строку в stdout и не входит в сдаваемый архив. `make mock` не требует оригинальной Linux-библиотеки. Если clang-tidy доступен только в CLion: `make lint CLANG_TIDY=/Applications/CLion.app/Contents/bin/clang/mac/clang-tidy`.
-
-Для `make docker` нужен запущенный контейнерный движок: по умолчанию в Makefile выбран Podman, для Docker используйте `make docker DOCKER=docker`. Цель собирает образ Ubuntu 24.04 для `linux/amd64` с оригинальной `libruntime.so`, затем запускает приложение и выводит stdout/stderr в терминал. На Apple Silicon используется эмуляция x86-64. Контейнер удаляется после завершения вместе с его файлами логов; образ `pa6:local` сохраняется для следующих запусков. Имя образа можно задать через `DOCKER_IMAGE`. Это проверка в современном Linux, а не точное воспроизведение Ubuntu 16.04 с clang-3.5 из задания.
-
-Сборка с оригинальной библиотекой и запуск — на Linux x86-64; подготовка архива возможна и на macOS:
-
-```sh
-make                                  # распаковка runtime и сборка build/pa6 на Linux
-LD_LIBRARY_PATH="$PWD/build/runtime/pa2345_starter_code/lib64" ./build/pa6 -p 5 --mutexl
-make package                          # архив build/dist/pa6.tar.gz
-make test-linux                       # проверка архива на Linux
-```
-
-`RUNTIME_LIB` по умолчанию указывает на распакованную библиотеку в `$(BUILD_DIR)/runtime/pa2345_starter_code/lib64/libruntime.so`. Имя программы и архива задаётся через `APP_NAME` (по умолчанию `pa6`); например, `make tests APP_NAME=lab1`. Архив проверен с оригинальной библиотекой в Ubuntu 24.04 (`linux/amd64`, Podman): оба режима для 0, 1, 2, 5, 10 и 15 детей. Подробнее о проверках — в [tests/README.md](tests/README.md).

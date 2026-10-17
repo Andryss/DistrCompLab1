@@ -4,19 +4,17 @@
 #ifndef DISTR_CHANNELS_H
 #define DISTR_CHANNELS_H
 
-#include "platform.h"
-#include <fcntl.h>
-#include <unistd.h>
-#include "logging.h"
 #include "process.h"
+#include "logging.h"
 
-/** Устанавливает -1 для каждого дескриптора до начала выделения ресурсов. */
+/** Инициализирует каналы и контекст приёма (вызывается только в родителе до fork()). */
 void channels_initialize(Process* process);
 
-/** Создаёт и логирует неблокирующий канал для каждой пары различных процессов. */
+/** Создаёт и логирует каналы (вызывается только в родителе до fork()).
+ * При -1 errno сохраняет ошибку pipe(), fcntl() или логирования. */
 int channels_create(Process* process, const Logs* logs);
 
-/** После fork() оставляет только входы и выходы текущего процесса. */
+/** Оставляет только свои входы и выходы (вызывается в каждом процессе после fork()). */
 void channels_keep_local(Process* process);
 
 /** Закрывает все оставшиеся дескрипторы, в том числе при незавершённой подготовке. */
