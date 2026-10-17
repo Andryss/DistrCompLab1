@@ -111,14 +111,15 @@
 ## Запуск
 
 ```sh
-make             # сборка приложения для Linux
-make mock        # сборка с тестовой print()
-make docker      # сборка и запуск в контейнере
-make runtime     # распаковка libruntime.so
-make tests       # сборка программы и тестов с ASan/UBSan
-make test        # сборка и запуск тестов
-make test-linux  # проверка архива в Linux
-make lint        # статический анализ
-make package     # архив build/dist/pa6.tar.gz
-make clean       # удаление build/
+make                # сборка приложения для Linux
+make mock           # сборка с тестовой print()
+make docker         # сборка и запуск в контейнере
+make check-command  # проверка команды сборки из задания в контейнере
+make runtime        # распаковка libruntime.so
+make tests          # сборка программы и тестов с ASan/UBSan
+make test           # сборка и запуск тестов
+make test-linux     # проверка архива в Linux
+make lint           # статический анализ
+make package        # архив build/dist/pa6.tar.gz
+make clean          # удаление build/
 ```

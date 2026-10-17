@@ -5,15 +5,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY Makefile ./
-COPY src/ ./src/
-COPY docs/PAs_master/pa2345_starter_code.tar.gz ./docs/PAs_master/
-
 ARG APP_NAME=pa6
-RUN make APP_NAME="$APP_NAME" \
-    && cp "build/$APP_NAME" ./program \
-    && cp build/runtime/pa2345_starter_code/lib64/libruntime.so ./libruntime.so
+COPY ${APP_NAME}.tar.gz /tmp/submission.tar.gz
+RUN tar --warning=no-unknown-keyword -xzf /tmp/submission.tar.gz --strip-components=1 \
+    && rm /tmp/submission.tar.gz
 
 ENV LD_LIBRARY_PATH=/app
-ENTRYPOINT ["/app/program"]
-CMD ["-p", "5", "--mutexl"]

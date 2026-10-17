@@ -51,19 +51,34 @@ TEST_CPPFLAGS = $(addprefix -I,$(TEST_DIRS)) $(shell pkg-config --cflags cmocka)
     -DTEST_RUNTIME_SOURCE='"$(abspath $(TEST_RUNTIME))"' \
     -DTEST_RUNTIME_LIBRARY='"$(abspath $(TEST_BUILD_DIR))/runtime/$(RUNTIME_DIRECTORY)/libruntime.so"'
 
-.PHONY: all mock docker tests test test-linux lint package runtime clean
+.PHONY: all mock docker docker-image check-command tests test test-linux lint package runtime clean
 all: $(APP_BINARY)
 
 # Локальное приложение с заменой print(), без Linux-библиотеки и cmocka.
 mock: $(MOCK_APP_BINARY)
 
 # Оригинальная библиотека рассчитана на Linux x86-64, включая запуск с Apple Silicon.
-docker:
-	$(DOCKER) build --platform linux/amd64 --build-arg APP_NAME="$(APP_NAME)" -t "$(DOCKER_IMAGE)" .
+docker-image: package
+	$(DOCKER) build --platform linux/amd64 --build-arg APP_NAME="$(APP_NAME)" \
+		--file "$(abspath Dockerfile)" -t "$(DOCKER_IMAGE)" "$(DIST_DIR)"
+
+docker: docker-image
 	mkdir -p "$(DOCKER_LOG_DIR)"
 	$(DOCKER) run --rm --init --platform linux/amd64 \
-		--volume "$(abspath $(DOCKER_LOG_DIR)):/logs" --workdir /logs \
-		"$(DOCKER_IMAGE)" $(DOCKER_ARGS)
+		--volume "$(abspath $(DOCKER_LOG_DIR)):/logs" \
+		"$(DOCKER_IMAGE)" /bin/sh -ec '\
+			clang -std=c99 -Wall -pedantic *.c -L. -lruntime; \
+			cd /logs; exec /app/a.out "$$@"' sh $(DOCKER_ARGS)
+
+# Проверяет точную команду задания на распакованном архиве, включая отсутствие предупреждений.
+check-command: docker-image
+	$(DOCKER) run --rm --network none --platform linux/amd64 \
+		"$(DOCKER_IMAGE)" /bin/sh -ec '\
+			clang -std=c99 -Wall -pedantic *.c -L. -lruntime >compile.log 2>&1 \
+				|| { cat compile.log; exit 1; }; \
+			cat compile.log; \
+			test ! -s compile.log; \
+			printf "Compilation passed without warnings.\n"'
 
 runtime: $(RUNTIME_LIB)
 
