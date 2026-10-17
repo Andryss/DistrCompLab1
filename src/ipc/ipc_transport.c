@@ -35,6 +35,7 @@ static ssize_t write_bytes(int descriptor, const void* bytes, size_t size) {
     return written;
 }
 
+/** Атомарная отправка; при EAGAIN кадр не записан и его можно повторить. */
 int send(void* self, local_id dst, const Message* message) {
     Process* process = self;
     if (!valid_peer(process, dst) || !valid_message(message)) {
@@ -42,7 +43,7 @@ int send(void* self, local_id dst, const Message* message) {
     }
     size_t size = sizeof(MessageHeader) + message->s_header.s_payload_len;
     errno = 0;
-    long limit = fpathconf(process->ipc.out[dst], _PC_PIPE_BUF);
+    long limit = fpathconf(process->ipc.descriptors[process->id][dst][PIPE_WRITE], _PC_PIPE_BUF);
     if (limit < 0) {
         return fail(errno != 0 ? errno : EINVAL);
     }
@@ -50,7 +51,7 @@ int send(void* self, local_id dst, const Message* message) {
         return fail(EMSGSIZE);
     }
 
-    ssize_t written = write_bytes(process->ipc.out[dst], message, size);
+    ssize_t written = write_bytes(process->ipc.descriptors[process->id][dst][PIPE_WRITE], message, size);
     if (written < 0) {
         return -1;
     }
@@ -61,6 +62,7 @@ int send(void* self, local_id dst, const Message* message) {
     return 0;
 }
 
+/** После частичной рассылки повторять её целиком нельзя. */
 int send_multicast(void* self, const Message* message) {
     Process* process = self;
     if (!valid_message(message)) {
@@ -79,25 +81,26 @@ int send_multicast(void* self, const Message* message) {
 }
 
 /** EOF посреди кадра означает повреждённое сообщение, а не чистое закрытие. */
-static int finish_channel(ReceiveState* state) {
+static int finish_channel(int* descriptor, const ReceiveState* state) {
     if (state->used > 0) {
         return fail(EBADMSG);
     }
-    state->closed = 1;
+    close(*descriptor);
+    *descriptor = -1;
     return RECEIVE_CLOSED;
 }
 
 /** Читает только оставшуюся часть заголовка или тела, не затрагивая следующий кадр. */
-static int read_fragment(int descriptor, ReceiveState* state, size_t target) {
+static int read_fragment(int* descriptor, ReceiveState* state, size_t target) {
     unsigned char* buffer = (unsigned char*)&state->message;
     for (;;) {
-        ssize_t received = read(descriptor, buffer + state->used, target - state->used);
+        ssize_t received = read(*descriptor, buffer + state->used, target - state->used);
         if (received > 0) {
             state->used += (size_t)received;
             return RECEIVE_COMPLETE;
         }
         if (received == 0) {
-            return finish_channel(state);
+            return finish_channel(descriptor, state);
         }
         if (errno == EINTR) {
             continue;
@@ -113,7 +116,7 @@ static int read_fragment(int descriptor, ReceiveState* state, size_t target) {
 /** Собирает полный кадр; неполный кадр остаётся в состоянии его отправителя. */
 static int read_frame(Process* process, int sender, Message* message) {
     ReceiveState* state = &process->ipc.rx[sender];
-    if (state->closed) {
+    if (process->ipc.descriptors[sender][process->id][PIPE_READ] < 0) {
         return RECEIVE_CLOSED;
     }
 
@@ -131,39 +134,35 @@ static int read_frame(Process* process, int sender, Message* message) {
             }
         }
 
-        int result = read_fragment(process->ipc.in[sender], state, target);
+        int result = read_fragment(&process->ipc.descriptors[sender][process->id][PIPE_READ], state, target);
         if (result != RECEIVE_COMPLETE) {
             return result;
         }
     }
 }
 
+/** Не ждёт данных: EAGAIN — кадр не собран, EPIPE — канал закрыт. */
 int receive(void* self, local_id from, Message* message) {
     Process* process = self;
     if (!valid_peer(process, from) || message == NULL) {
         return fail(EINVAL);
     }
 
-    for (;;) {
-        int result = read_frame(process, from, message);
-        if (result == RECEIVE_COMPLETE) {
-            return 0;
-        }
-        if (result == RECEIVE_ERROR) {
-            return -1;
-        }
-        if (result == RECEIVE_CLOSED) {
-            return fail(EPIPE);
-        }
-        ipc_pause();
+    int result = read_frame(process, from, message);
+    if (result == RECEIVE_COMPLETE) {
+        return 0;
     }
+    if (result == RECEIVE_ERROR) {
+        return -1;
+    }
+    return fail(result == RECEIVE_CLOSED ? EPIPE : EAGAIN);
 }
 
 /** Делает один круг по открытым каналам и возвращает сообщение либо новое закрытие. */
 int ipc_receive_step(Process* process, local_id* source, Message* message) {
     for (int step = 0; step < process->count; ++step) {
         int sender = (process->ipc.next_peer + step) % process->count;
-        if (sender == process->id || process->ipc.in[sender] < 0 || process->ipc.rx[sender].closed) {
+        if (sender == process->id || process->ipc.descriptors[sender][process->id][PIPE_READ] < 0) {
             continue;
         }
 
@@ -183,33 +182,32 @@ int ipc_receive_step(Process* process, local_id* source, Message* message) {
 /** Проверяет, может ли публичный receive_any() ещё дождаться сообщения. */
 static int has_open_channels(const Process* process) {
     for (int peer = 0; peer < process->count; ++peer) {
-        if (peer != process->id && process->ipc.in[peer] >= 0 && !process->ipc.rx[peer].closed) {
+        if (peer != process->id && process->ipc.descriptors[peer][process->id][PIPE_READ] >= 0) {
             return 1;
         }
     }
     return 0;
 }
 
+/** Не ждёт данных: EAGAIN — нет полного кадра, EPIPE — закрыты все входы. */
 int receive_any(void* self, Message* message) {
     Process* process = self;
     if (message == NULL) {
         return fail(EINVAL);
     }
 
-    for (;;) {
-        local_id sender;
-        int result = ipc_receive_step(process, &sender, message);
-        if (result == RECEIVE_COMPLETE) {
-            return 0;
-        }
-        if (result == RECEIVE_ERROR) {
-            return -1;
-        }
-        if (!has_open_channels(process)) {
-            return fail(EPIPE);
-        }
-        if (result == RECEIVE_PENDING) {
-            ipc_pause();
-        }
+    local_id sender;
+    int result;
+    // Закрытие одного канала не должно скрывать сообщения остальных.
+    do {
+        result = ipc_receive_step(process, &sender, message);
+    } while (result == RECEIVE_CLOSED);
+
+    if (result == RECEIVE_COMPLETE) {
+        return 0;
     }
+    if (result == RECEIVE_ERROR) {
+        return -1;
+    }
+    return fail(has_open_channels(process) ? EAGAIN : EPIPE);
 }

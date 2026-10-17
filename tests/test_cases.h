@@ -22,6 +22,12 @@ void test_ipc_multicast(void** state);
 /** Проверяет накопление заголовка и тела из отдельных фрагментов. */
 void test_ipc_partial_reception(void** state);
 
+/** Проверяет EAGAIN при пустом канале и сборку фрагментов без ожидания. */
+void test_ipc_receive_pending(void** state);
+
+/** Проверяет неблокирующий приём от любого отправителя и различение EAGAIN/EOF. */
+void test_ipc_receive_any_pending(void** state);
+
 /** Проверяет справедливый круговой обход отправителей. */
 void test_ipc_round_robin(void** state);
 
@@ -34,8 +40,11 @@ void test_ipc_atomic_writes(void** state);
 /** Проверяет недопустимый формат и EOF посреди кадра. */
 void test_ipc_errors(void** state);
 
-/** Проверяет O_NONBLOCK на чтении и записи подключённых каналов. */
+/** Проверяет O_NONBLOCK на чтении и записи после создания и подключения каналов. */
 void test_channels_nonblocking(void** state);
+
+/** Проверяет очистку незавершённой подготовки и безопасность повторного закрытия. */
+void test_channels_cleanup(void** state);
 
 /** Проверяет правила владения вилками и маркерами. */
 void test_philosophers_rules(void** state);
@@ -44,13 +53,13 @@ void test_philosophers_rules(void** state);
 void test_philosophers_model(void** state);
 
 /** Проверяет события жизненного цикла и обслуживание вилок после своей работы. */
-void test_dispatcher_lifecycle(void** state);
+void test_protocol_lifecycle(void** state);
 
 /** Проверяет всех участников барьера, безвредность повторов и закрытие конкретного соседа. */
 void test_barrier_senders(void** state);
 
 /** Проверяет гонку закрытия с ранним запросом и ещё не обработанным DONE. */
-void test_dispatcher_close_race(void** state);
+void test_protocol_close_race(void** state);
 
 /** Проверяет программу в обоих режимах с отметками тестовой print(). */
 void test_program(const char* binary);

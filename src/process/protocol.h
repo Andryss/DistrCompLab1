@@ -11,7 +11,13 @@
 #include "logging.h"
 #include "process.h"
 
-/** Выполняет фазы STARTED и DONE для ребёнка, включая рассылку и логирование. */
+/** Обрабатывает один кадр и обслуживает запросы философов; возвращает 0 либо -1 при ошибке. */
+int protocol_step(Process* process);
+
+/** Ожидает STARTED или DONE от всех других детей, продолжая обслуживать IPC. */
+int protocol_wait(Process* process, MessageType type);
+
+/** Выполняет стартовый барьер, полезную работу и завершающий барьер ребёнка. */
 int protocol_run_child(Process* process, const Logs* logs);
 
 /** Получает STARTED и DONE от всех детей; родитель ничего не рассылает. */

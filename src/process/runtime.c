@@ -3,7 +3,6 @@
 /** Ресурсы запуска; после fork каждый процесс работает со своей копией. */
 typedef struct {
     Process process; /**< Контекст IPC текущего процесса. */
-    Channels channels; /**< Концы каналов, ещё не переданные контексту. */
     Logs logs; /**< Открытые файлы логирования. */
     pid_t children[MAX_PROCESS_ID]; /**< PID созданных детей; 0 после waitpid(). */
     int child_count; /**< Число успешно созданных детей. */
@@ -17,11 +16,7 @@ static void runtime_initialize(Runtime* runtime, int child_count) {
     runtime->logs.events_fd = -1;
     runtime->logs.pipes_fd = -1;
 
-    for (int peer = 0; peer < PROCESS_LIMIT; ++peer) {
-        runtime->process.ipc.in[peer] = -1;
-        runtime->process.ipc.out[peer] = -1;
-    }
-    channels_initialize(&runtime->channels);
+    channels_initialize(&runtime->process);
 }
 
 /** Настраивает сигналы, открывает логи и создаёт сеть до первого fork(). */
@@ -34,7 +29,7 @@ static int runtime_prepare(Runtime* runtime) {
     if (logs_open(&runtime->logs) < 0) {
         return -1;
     }
-    if (channels_create(&runtime->channels, runtime->process.count, &runtime->logs) < 0) {
+    if (channels_create(&runtime->process, &runtime->logs) < 0) {
         return -1;
     }
 
@@ -91,8 +86,7 @@ static int wait_for_all_children(Runtime* runtime) {
 
 /** Единая очистка работает и при частично завершённой подготовке. */
 static int runtime_close(Runtime* runtime, int failed) {
-    channels_close(&runtime->channels, runtime->process.count);
-    channels_close_process(&runtime->process);
+    channels_close(&runtime->process);
 
     if (failed && runtime->process.id == PARENT_ID) {
         terminate_children(runtime);
@@ -104,10 +98,8 @@ static int runtime_close(Runtime* runtime, int failed) {
 /** Подключает каналы ребёнка, выполняет протокол и завершает процесс. */
 static void execute_child(Runtime* runtime, local_id id) {
     runtime->process.id = id;
-    int result = channels_attach(&runtime->channels, &runtime->process);
-    if (result == 0) {
-        result = protocol_run_child(&runtime->process, &runtime->logs);
-    }
+    channels_keep_local(&runtime->process);
+    int result = protocol_run_child(&runtime->process, &runtime->logs);
     if (result < 0) {
         perror("child process");
     }
@@ -144,14 +136,12 @@ static int execute_parent(Runtime* runtime) {
     if (create_children(runtime) < 0) {
         return -1;
     }
-    if (channels_attach(&runtime->channels, &runtime->process) < 0) {
-        return -1;
-    }
+    channels_keep_local(&runtime->process);
     if (protocol_run_parent(&runtime->process) < 0) {
         return -1;
     }
 
-    channels_close_process(&runtime->process);
+    channels_close(&runtime->process);
     return wait_for_all_children(runtime);
 }
 

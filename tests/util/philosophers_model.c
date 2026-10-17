@@ -26,10 +26,7 @@ static void initialize_process(int id, int count) {
     process->id = (local_id)id;
     process->count = count;
     process->philosopher.enabled = 1;
-    for (int peer = 0; peer < PROCESS_LIMIT; ++peer) {
-        process->ipc.in[peer] = -1;
-        process->ipc.out[peer] = -1;
-    }
+    channels_initialize(process);
     philosophers_initialize(process);
 }
 
@@ -40,8 +37,8 @@ static void connect_processes(int sender, int receiver) {
     for (int end = 0; end < 2; ++end) {
         assert_int_equal(0, fcntl(descriptors[end], F_SETFL, O_NONBLOCK));
     }
-    processes[sender].ipc.out[receiver] = descriptors[1];
-    processes[receiver].ipc.in[sender] = descriptors[0];
+    processes[sender].ipc.descriptors[sender][receiver][PIPE_WRITE] = descriptors[1];
+    processes[receiver].ipc.descriptors[sender][receiver][PIPE_READ] = descriptors[0];
 }
 
 void test_model_open(int count) {
@@ -68,7 +65,7 @@ Process* test_model_process(int id) {
 
 void test_model_close(void) {
     for (int id = 1; id < process_count; ++id) {
-        channels_close_process(&processes[id]);
+        channels_close(&processes[id]);
     }
     process_count = 0;
 }

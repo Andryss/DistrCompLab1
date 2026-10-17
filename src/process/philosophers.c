@@ -1,6 +1,6 @@
 #include "philosophers.h"
 #include "pa2345.h"
-#include "dispatcher.h"
+#include "protocol.h"
 #include <errno.h>
 #include <stdio.h>
 
@@ -46,21 +46,6 @@ static int request_missing_fork(Process* process, int peer) {
         return result;
     }
     philosopher->req[peer] = 0;
-    return 0;
-}
-
-/** Принимает единственный маркер запроса либо чистую вилку. */
-static int accept_resource(Process* process, local_id sender, MessageType type) {
-    ProcessPhilosopher* philosopher = &process->philosopher;
-    if (type == CS_REQUEST && !philosopher->req[sender]) {
-        philosopher->req[sender] = 1;
-    } else if (type == CS_REPLY && !philosopher->fork[sender]) {
-        philosopher->fork[sender] = 1;
-        philosopher->dirty[sender] = 0;
-    } else {
-        errno = EBADMSG;
-        return -1;
-    }
     return 0;
 }
 
@@ -111,7 +96,18 @@ int philosophers_receive(Process* process, local_id sender, const Message* messa
         errno = EBADMSG;
         return -1;
     }
-    return accept_resource(process, sender, (MessageType)message->s_header.s_type);
+    ProcessPhilosopher* philosopher = &process->philosopher;
+    MessageType type = (MessageType)message->s_header.s_type;
+    if (type == CS_REQUEST && !philosopher->req[sender]) {
+        philosopher->req[sender] = 1;
+    } else if (type == CS_REPLY && !philosopher->fork[sender]) {
+        philosopher->fork[sender] = 1;
+        philosopher->dirty[sender] = 0;
+    } else {
+        errno = EBADMSG;
+        return -1;
+    }
+    return 0;
 }
 
 int philosophers_ready(const Process* process) {
@@ -140,7 +136,7 @@ int request_cs(const void* self) {
         return -1;
     }
     while (!philosophers_ready(process)) {
-        if (dispatcher_step(process) < 0) {
+        if (protocol_step(process) < 0) {
             return -1;
         }
     }
@@ -185,7 +181,7 @@ int perform_work(Process* process) {
         if (print_iteration(process, iteration, total) < 0) {
             return -1;
         }
-        if (dispatcher_step(process) < 0) {
+        if (protocol_step(process) < 0) {
             return -1;
         }
     }

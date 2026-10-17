@@ -22,10 +22,7 @@ void test_ipc_setup(void) {
     for (int id = 0; id < 3; ++id) {
         peers[id].id = (local_id)id;
         peers[id].count = 3;
-        for (int other = 0; other < PROCESS_LIMIT; ++other) {
-            peers[id].ipc.in[other] = -1;
-            peers[id].ipc.out[other] = -1;
-        }
+        channels_initialize(&peers[id]);
     }
 }
 
@@ -33,14 +30,7 @@ void test_ipc_setup(void) {
 void test_ipc_teardown(void) {
     test_write_reset();
     for (int id = 0; id < 3; ++id) {
-        for (int other = 0; other < PROCESS_LIMIT; ++other) {
-            if (peers[id].ipc.in[other] >= 0) {
-                close(peers[id].ipc.in[other]);
-            }
-            if (peers[id].ipc.out[other] >= 0) {
-                close(peers[id].ipc.out[other]);
-            }
-        }
+        channels_close(&peers[id]);
     }
 }
 
@@ -48,8 +38,8 @@ void test_ipc_teardown(void) {
 static void connect_peers(int sender, int receiver) {
     int descriptors[2];
     assert_int_equal(0, pipe(descriptors));
-    peers[sender].ipc.out[receiver] = descriptors[1];
-    peers[receiver].ipc.in[sender] = descriptors[0];
+    peers[sender].ipc.descriptors[sender][receiver][PIPE_WRITE] = descriptors[1];
+    peers[receiver].ipc.descriptors[sender][receiver][PIPE_READ] = descriptors[0];
     assert_int_equal(0, fcntl(descriptors[1], F_SETFL, O_NONBLOCK));
     int flags = fcntl(descriptors[0], F_GETFL);
     assert_true(flags >= 0);
@@ -84,7 +74,7 @@ void test_ipc_wire_format(void** state) {
     unsigned char wire[MAX_MESSAGE_LEN];
 
     assert_int_equal(0, send(&peers[0], 1, &message));
-    ssize_t length = read(peers[1].ipc.in[0], wire, sizeof(wire));
+    ssize_t length = read(peers[1].ipc.descriptors[0][1][PIPE_READ], wire, sizeof(wire));
 
     assert_int_equal(sizeof(MessageHeader) + 6, length);
     assert_memory_equal(&message, wire, (size_t)length);
@@ -106,7 +96,7 @@ void test_ipc_empty_and_maximum_payload(void** state) {
     assert_int_equal(0, send(&peers[0], 1, &message));
     assert_int_equal(0, receive(&peers[1], 0, &received));
     assert_payload(&received, "");
-    size_t payload = atomic_payload_limit(peers[0].ipc.out[1]);
+    size_t payload = atomic_payload_limit(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
     message.s_header.s_payload_len = (uint16_t)payload;
     memset(message.s_payload, 'x', MAX_PAYLOAD_LEN);
     assert_int_equal(0, send(&peers[0], 1, &message));
@@ -131,8 +121,64 @@ void test_ipc_multicast(void** state) {
     assert_payload(&received, "all");
 }
 
+void test_ipc_receive_pending(void** state) {
+    (void)state;
+    alarm(5); // Блокирующий приём должен завершить тест по таймауту.
+    connect_peers(1, 0);
+    Message message = make_message("fragment"), received;
+
+    assert_int_equal(-1, receive(&peers[0], 1, &received));
+    assert_int_equal(EAGAIN, errno);
+
+    int writer = peers[1].ipc.descriptors[1][0][PIPE_WRITE];
+    assert_int_equal(3, write(writer, &message, 3));
+    assert_int_equal(-1, receive(&peers[0], 1, &received));
+    assert_int_equal(EAGAIN, errno);
+
+    size_t fragment = sizeof(MessageHeader) - 3 + 2;
+    assert_int_equal(fragment, write(writer, (char*)&message + 3, fragment));
+    assert_int_equal(-1, receive(&peers[0], 1, &received));
+    assert_int_equal(EAGAIN, errno);
+
+    assert_int_equal(6, write(writer, message.s_payload + 2, 6));
+    Message next = make_message("next");
+    assert_int_equal(0, send(&peers[1], 0, &next));
+    assert_int_equal(0, receive(&peers[0], 1, &received));
+    assert_payload(&received, "fragment");
+    assert_int_equal(0, receive(&peers[0], 1, &received));
+    assert_payload(&received, "next");
+    assert_int_equal(-1, receive(&peers[0], 1, &received));
+    assert_int_equal(EAGAIN, errno);
+}
+
+void test_ipc_receive_any_pending(void** state) {
+    (void)state;
+    alarm(5); // Отсутствие данных не должно запускать внутреннее ожидание.
+    connect_peers(1, 0);
+    connect_peers(2, 0);
+    Message message = make_message("still open"), received;
+
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EAGAIN, errno);
+
+    // EOF первого отправителя не скрывает готовое сообщение второго.
+    assert_int_equal(0, send(&peers[2], 0, &message));
+    close(peers[1].ipc.descriptors[1][0][PIPE_WRITE]);
+    peers[1].ipc.descriptors[1][0][PIPE_WRITE] = -1;
+    assert_int_equal(0, receive_any(&peers[0], &received));
+    assert_payload(&received, "still open");
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EAGAIN, errno);
+
+    close(peers[2].ipc.descriptors[2][0][PIPE_WRITE]);
+    peers[2].ipc.descriptors[2][0][PIPE_WRITE] = -1;
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EPIPE, errno);
+}
+
 void test_ipc_partial_reception(void** state) {
     (void)state;
+    alarm(5);
     connect_peers(1, 0);
     connect_peers(2, 0);
     Message partial = make_message("fragment");
@@ -143,18 +189,22 @@ void test_ipc_partial_reception(void** state) {
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "ready");
 
-    assert_int_equal(3, write(peers[1].ipc.out[0], &partial, 3));
+    assert_int_equal(3, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], &partial, 3));
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EAGAIN, errno);
     assert_int_equal(0, send(&peers[2], 0, &ready));
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "ready");
 
     size_t fragment = sizeof(MessageHeader) - 3 + 2;
-    assert_int_equal(fragment, write(peers[1].ipc.out[0], (char*)&partial + 3, fragment));
+    assert_int_equal(fragment, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], (char*)&partial + 3, fragment));
+    assert_int_equal(-1, receive_any(&peers[0], &received));
+    assert_int_equal(EAGAIN, errno);
     assert_int_equal(0, send(&peers[2], 0, &ready));
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "ready");
 
-    assert_int_equal(6, write(peers[1].ipc.out[0], partial.s_payload + 2, 6));
+    assert_int_equal(6, write(peers[1].ipc.descriptors[1][0][PIPE_WRITE], partial.s_payload + 2, 6));
     assert_int_equal(0, receive(&peers[0], 1, &received));
     assert_payload(&received, "fragment");
 }
@@ -184,7 +234,7 @@ void test_ipc_backpressure(void** state) {
     connect_peers(0, 1);
     connect_peers(0, 2);
     Message message = make_message("");
-    size_t payload = atomic_payload_limit(peers[0].ipc.out[1]);
+    size_t payload = atomic_payload_limit(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
     message.s_header.s_payload_len = (uint16_t)payload;
     memset(message.s_payload, 'q', MAX_PAYLOAD_LEN);
 
@@ -234,7 +284,7 @@ void test_ipc_backpressure(void** state) {
 void test_ipc_atomic_writes(void** state) {
     (void)state;
     connect_peers(0, 1);
-    test_write_inject(peers[0].ipc.out[1], MAX_MESSAGE_LEN, 1, 1);
+    test_write_inject(peers[0].ipc.descriptors[0][1][PIPE_WRITE], MAX_MESSAGE_LEN, 1, 1);
     Message message = make_message("atomic message");
     Message received;
     local_id sender;
@@ -249,7 +299,7 @@ void test_ipc_atomic_writes(void** state) {
     assert_int_equal(0, ipc_receive_step(&peers[1], &sender, &received));
 
     // При меньшем платформенном пределе слишком большой кадр отклоняется целиком.
-    size_t payload = atomic_payload_limit(peers[0].ipc.out[1]);
+    size_t payload = atomic_payload_limit(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
     if (payload < MAX_PAYLOAD_LEN) {
         message.s_header.s_payload_len = (uint16_t)(payload + 1);
         assert_int_equal(-1, send(&peers[0], 1, &message));
@@ -259,7 +309,7 @@ void test_ipc_atomic_writes(void** state) {
 
     // Искусственное нарушение гарантии должно завершиться ошибкой, а не дописыванием.
     message = make_message("broken atomicity");
-    test_write_inject(peers[0].ipc.out[1], 3, 0, 0);
+    test_write_inject(peers[0].ipc.descriptors[0][1][PIPE_WRITE], 3, 0, 0);
     assert_int_equal(-1, send(&peers[0], 1, &message));
     assert_int_equal(EIO, errno);
     test_write_reset();
@@ -282,56 +332,114 @@ void test_ipc_errors(void** state) {
     message.s_header.s_payload_len = MAX_PAYLOAD_LEN + 1;
     assert_int_equal(-1, send(&peers[0], 1, &message));
     message = make_message("broken");
-    assert_int_equal(3, write(peers[0].ipc.out[1], &message, 3));
-    close(peers[0].ipc.out[1]);
-    peers[0].ipc.out[1] = -1;
+    assert_int_equal(3, write(peers[0].ipc.descriptors[0][1][PIPE_WRITE], &message, 3));
+    close(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
+    peers[0].ipc.descriptors[0][1][PIPE_WRITE] = -1;
     assert_int_equal(-1, receive(&peers[1], 0, &received));
     assert_int_equal(EBADMSG, errno);
 }
 
+/** Проверяет фактическое закрытие дескриптора, а не только значение в таблице. */
+static void assert_closed(int descriptor) {
+    assert_int_equal(-1, fcntl(descriptor, F_GETFD));
+    assert_int_equal(EBADF, errno);
+}
+
 void test_channels_nonblocking(void** state) {
     (void)state;
-    Channels channels;
-    channels_initialize(&channels);
-    int descriptors[2];
+    Process* process = &peers[1];
+    Logs logs = {.events_fd = -1, .pipes_fd = open("/dev/null", O_WRONLY)};
+    assert_true(logs.pipes_fd >= 0);
+    assert_int_equal(0, channels_create(process, &logs));
+    assert_int_equal(0, logs_close(&logs));
+    int opened[3][3][2];
     for (int source = 0; source < 3; ++source) {
         for (int destination = 0; destination < 3; ++destination) {
-            if (source == destination) {
-                continue;
+            for (int end = 0; end < 2; ++end) {
+                int descriptor = process->ipc.descriptors[source][destination][end];
+                opened[source][destination][end] = descriptor;
+                if (source == destination) {
+                    assert_int_equal(-1, descriptor);
+                } else {
+                    int flags = fcntl(descriptor, F_GETFL);
+                    assert_true(flags >= 0 && (flags & O_NONBLOCK));
+                }
             }
-            assert_int_equal(0, pipe(descriptors));
-            channels.descriptors[source][destination][0] = descriptors[0];
-            channels.descriptors[source][destination][1] = descriptors[1];
         }
     }
-    assert_int_equal(0, channels_attach(&channels, &peers[1]));
-    for (int peer = 0; peer < 3; ++peer) {
-        if (peer == 1) {
-            continue;
+
+    // У процесса 1 остаются два входа (0 -> 1, 2 -> 1) и два выхода (1 -> 0, 1 -> 2).
+    int retained[] = {opened[0][1][0], opened[2][1][0], opened[1][0][1], opened[1][2][1]};
+    channels_keep_local(process);
+    for (int source = 0; source < 3; ++source) {
+        for (int destination = 0; destination < 3; ++destination) {
+            for (int end = 0; end < 2; ++end) {
+                int original = opened[source][destination][end];
+                int current = process->ipc.descriptors[source][destination][end];
+                int keep = 0;
+                for (size_t index = 0; index < sizeof(retained) / sizeof(retained[0]); ++index) {
+                    keep |= original == retained[index];
+                }
+                if (keep) {
+                    assert_int_equal(original, current);
+                    int flags = fcntl(current, F_GETFL);
+                    assert_true(flags >= 0 && (flags & O_NONBLOCK));
+                } else {
+                    assert_int_equal(-1, current);
+                    assert_closed(original);
+                }
+            }
         }
-        assert_true(fcntl(peers[1].ipc.in[peer], F_GETFL) & O_NONBLOCK);
-        assert_true(fcntl(peers[1].ipc.out[peer], F_GETFL) & O_NONBLOCK);
     }
+    channels_close(process);
+    for (size_t index = 0; index < sizeof(retained) / sizeof(retained[0]); ++index) {
+        assert_closed(retained[index]);
+    }
+}
+
+void test_channels_cleanup(void** state) {
+    (void)state;
+    Process* process = &peers[0];
+    // Незавершённая подготовка до fork(): процесс пока владеет обоими концами чужого канала.
+    int* descriptors = process->ipc.descriptors[1][2];
+    assert_int_equal(0, pipe(descriptors));
+    int reader = descriptors[PIPE_READ], writer = descriptors[PIPE_WRITE];
+    channels_close(process);
+    assert_closed(reader);
+    assert_closed(writer);
+    assert_int_equal(-1, descriptors[PIPE_READ]);
+    assert_int_equal(-1, descriptors[PIPE_WRITE]);
+
+    // Повторная очистка не должна закрыть новый файл с переиспользованным номером.
+    int unrelated = open("/dev/null", O_RDONLY);
+    assert_true(unrelated >= 0);
+    channels_close(process);
+    assert_true(fcntl(unrelated, F_GETFD) >= 0);
+    assert_int_equal(0, close(unrelated));
 }
 
 void test_ipc_closed_channels(void** state) {
     (void)state;
     connect_peers(1, 0);
     connect_peers(2, 0);
-    close(peers[1].ipc.out[0]);
-    peers[1].ipc.out[0] = -1;
+    int closed_descriptor = peers[0].ipc.descriptors[1][0][PIPE_READ];
+    close(peers[1].ipc.descriptors[1][0][PIPE_WRITE]);
+    peers[1].ipc.descriptors[1][0][PIPE_WRITE] = -1;
 
     Message message = make_message("still open"), received;
     local_id sender = -1;
     assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
     assert_int_equal(1, sender);
+    assert_int_equal(-1, peers[0].ipc.descriptors[1][0][PIPE_READ]);
+    assert_int_equal(-1, fcntl(closed_descriptor, F_GETFD));
+    assert_int_equal(EBADF, errno);
     assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));
     assert_int_equal(0, send(&peers[2], 0, &message));
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "still open");
 
-    close(peers[2].ipc.out[0]);
-    peers[2].ipc.out[0] = -1;
+    close(peers[2].ipc.descriptors[2][0][PIPE_WRITE]);
+    peers[2].ipc.descriptors[2][0][PIPE_WRITE] = -1;
     assert_int_equal(RECEIVE_CLOSED, ipc_receive_step(&peers[0], &sender, &received));
     assert_int_equal(2, sender);
     assert_int_equal(RECEIVE_PENDING, ipc_receive_step(&peers[0], &sender, &received));

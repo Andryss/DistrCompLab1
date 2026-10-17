@@ -236,7 +236,10 @@ static void check_original_runtime(const char* binary, int children, int mutex_e
     char count[16];
     snprintf(count, sizeof(count), "%d", children);
     char* arguments[] = {(char*)binary, "-p", count, mutex_enabled ? "--mutexl" : NULL, NULL};
-    assert_int_equal(0, test_command(arguments, directory, 60));
+    printf("Original runtime: -p %d%s\n", children, mutex_enabled ? " --mutexl" : "");
+    fflush(stdout);
+    // Посимвольная print() для 15 детей под эмуляцией может работать дольше минуты.
+    assert_int_equal(0, test_command(arguments, directory, 180));
 
     char* output = test_stderr();
     assert_true(test_runtime_output_valid(output, children, mutex_enabled));
