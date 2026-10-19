@@ -1,5 +1,5 @@
-#include "philosophers_model.h"
 #include "test_support.h"
+#include "philosophers_model.h"
 #include "philosophers.h"
 #include "channels.h"
 

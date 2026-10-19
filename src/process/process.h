@@ -4,7 +4,6 @@
 #ifndef DISTR_PROCESS_H
 #define DISTR_PROCESS_H
 
-#include "platform.h"
 #include "ipc.h"
 
 /** Максимальное число процессов с учётом родителя. */

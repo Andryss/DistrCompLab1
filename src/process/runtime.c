@@ -1,4 +1,6 @@
-#include "platform.h"
+// Открывает объявление kill() при сборке с -std=c99.
+#define _POSIX_C_SOURCE 200809L
+
 #include "runtime.h"
 #include "channels.h"
 #include "protocol.h"

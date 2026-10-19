@@ -4,12 +4,13 @@
 #ifndef DISTR_TEST_SUPPORT_H
 #define DISTR_TEST_SUPPORT_H
 
+#define _POSIX_C_SOURCE 200809L
+
 /* В macOS mkdtemp объявляется в расширениях Darwin, а не в POSIX-разделе. */
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
 #endif
 
-#include "platform.h"
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>

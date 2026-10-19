@@ -1,4 +1,3 @@
-#include "platform.h"
 #include "runtime.h"
 #include "ipc.h"
 #include <errno.h>

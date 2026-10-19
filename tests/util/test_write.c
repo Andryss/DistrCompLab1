@@ -1,4 +1,3 @@
-#include "platform.h"
 /* Only the unit-test executable remaps write; the application uses the real syscall. */
 #undef write
 #include <unistd.h>

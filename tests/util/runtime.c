@@ -1,4 +1,5 @@
-#include "platform.h"
+#define _POSIX_C_SOURCE 200809L
+
 #include "pa2345.h"
 #include <errno.h>
 #include <fcntl.h>

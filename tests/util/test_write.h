@@ -4,7 +4,6 @@
 #ifndef DISTR_TEST_WRITE_H
 #define DISTR_TEST_WRITE_H
 
-#include "platform.h"
 #include <stddef.h>
 #include <sys/types.h>
 

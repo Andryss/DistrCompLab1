@@ -1,4 +1,3 @@
-#include "platform.h"
 #include "logging.h"
 #include "common.h"
 #include <errno.h>
