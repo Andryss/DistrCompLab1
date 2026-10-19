@@ -258,7 +258,7 @@ void test_ipc_backpressure(void** state) {
     while (sent < 256) {
         memcpy(message.s_payload, &sent, sizeof(sent));
         if (send(&peers[0], 1, &message) < 0) {
-            assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+            assert_int_equal(EAGAIN, errno);
             break;
         }
         ++sent;
@@ -277,7 +277,7 @@ void test_ipc_backpressure(void** state) {
             if (send(&peers[0], 1, &message) == 0) {
                 ++sent;
             } else {
-                assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+                assert_int_equal(EAGAIN, errno);
             }
         }
         int result = receive_any(&peers[1], &received);
@@ -315,16 +315,6 @@ void test_ipc_atomic_writes(void** state) {
     assert_int_equal(-1, receive_any(&peers[1], &received));
     assert_int_equal(EAGAIN, errno);
 
-    // При меньшем платформенном пределе слишком большой кадр отклоняется целиком.
-    size_t payload = atomic_payload_limit(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
-    if (payload < MAX_PAYLOAD_LEN) {
-        message.s_header.s_payload_len = (uint16_t)(payload + 1);
-        assert_int_equal(-1, send(&peers[0], 1, &message));
-        assert_int_equal(EMSGSIZE, errno);
-        assert_int_equal(-1, receive_any(&peers[1], &received));
-        assert_int_equal(EAGAIN, errno);
-    }
-
     // Искусственное нарушение гарантии должно завершиться ошибкой, а не дописыванием.
     message = make_message("broken atomicity");
     test_write_inject(peers[0].ipc.descriptors[0][1][PIPE_WRITE], 3, 0, 0);
@@ -339,16 +329,20 @@ void test_ipc_errors(void** state) {
     Message message = make_message("broken"), received;
     assert_int_equal(-1, send(&peers[0], 2, &message));
     assert_int_equal(EBADF, errno);
-    assert_int_equal(-1, send(&peers[0], 0, &message));
-    assert_int_equal(EINVAL, errno);
-    assert_int_equal(-1, send(&peers[0], 3, &message));
-    assert_int_equal(EINVAL, errno);
+
+    // Повреждённый заголовок отвергается до чтения тела.
     message.s_header.s_magic = 0;
-    assert_int_equal(-1, send(&peers[0], 1, &message));
-    assert_int_equal(EINVAL, errno);
+    assert_int_equal(sizeof(MessageHeader),
+                     write(peers[0].ipc.descriptors[0][1][PIPE_WRITE], &message, sizeof(MessageHeader)));
+    assert_int_equal(-1, receive(&peers[1], 0, &received));
+    assert_int_equal(EBADMSG, errno);
     message.s_header.s_magic = MESSAGE_MAGIC;
     message.s_header.s_payload_len = MAX_PAYLOAD_LEN + 1;
-    assert_int_equal(-1, send(&peers[0], 1, &message));
+    assert_int_equal(sizeof(MessageHeader),
+                     write(peers[0].ipc.descriptors[0][1][PIPE_WRITE], &message, sizeof(MessageHeader)));
+    assert_int_equal(-1, receive(&peers[1], 0, &received));
+    assert_int_equal(EBADMSG, errno);
+
     message = make_message("broken");
     assert_int_equal(3, write(peers[0].ipc.descriptors[0][1][PIPE_WRITE], &message, 3));
     close(peers[0].ipc.descriptors[0][1][PIPE_WRITE]);
@@ -466,10 +460,6 @@ void test_ipc_closed_channels(void** state) {
     assert_int_equal(0, receive_any(&peers[0], &received));
     assert_payload(&received, "still open");
     assert_int_equal(2, peers[0].ipc.receive.sender);
-    assert_int_equal(-1, receive_any(&peers[0], NULL));
-    assert_int_equal(EINVAL, errno);
-    assert_int_equal(-1, peers[0].ipc.receive.sender);
-
     close(peers[2].ipc.descriptors[2][0][PIPE_WRITE]);
     peers[2].ipc.descriptors[2][0][PIPE_WRITE] = -1;
     assert_int_equal(-1, receive_any(&peers[0], &received));

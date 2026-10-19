@@ -41,7 +41,7 @@ int protocol_step(Process* process) {
     int received = receive_any(process, &message);
     int error = received < 0 ? errno : 0;
     local_id sender = process->ipc.receive.sender;
-    if (received < 0 && error != EAGAIN && error != EWOULDBLOCK && error != EPIPE) {
+    if (received < 0 && error != EAGAIN && error != EPIPE) {
         return -1;
     }
     if (error == EPIPE && sender > PARENT_ID && !process->barriers.done[sender]) {
@@ -62,23 +62,16 @@ int protocol_wait(Process* process, MessageType type) {
     return 0;
 }
 
-/** Заполняет заголовок сообщения.
- * При -1 errno = EIO: ошибка snprintf() или усечённое тело. */
-static int prepare_message(Message* message, MessageType type, int length) {
-    if (length < 0 || (size_t)length >= sizeof(message->s_payload)) {
-        errno = EIO;
-        return -1;
-    }
-
+/** Заполняет заголовок сообщения. */
+static void prepare_message(Message* message, MessageType type, int length) {
     message->s_header.s_magic = MESSAGE_MAGIC;
     message->s_header.s_payload_len = (uint16_t)length;
     message->s_header.s_type = (int16_t)type;
     message->s_header.s_local_time = 0;
-    return 0;
 }
 
 /** Логирует и рассылает сообщение (вызывается только в ребёнке).
- * При -1 errno сохраняет ошибку логов, IPC или протокола; EAGAIN/EWOULDBLOCK при отправке повторяет. */
+ * При -1 errno сохраняет ошибку логов, IPC или протокола; EAGAIN при отправке повторяет. */
 static int publish_message(Process* process, const Logs* logs, const Message* message) {
     if (log_event(logs, message->s_payload, message->s_header.s_payload_len) < 0) {
         return -1;
@@ -88,7 +81,7 @@ static int publish_message(Process* process, const Logs* logs, const Message* me
             continue;
         }
         while (send(process, (local_id)peer, message) < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            if (errno != EAGAIN) {
                 return -1;
             }
             if (protocol_step(process) < 0) {
@@ -100,26 +93,20 @@ static int publish_message(Process* process, const Logs* logs, const Message* me
 }
 
 /** Записывает прохождение барьера в лог (вызывается только в ребёнке).
- * При -1 errno: EIO — ошибка/усечение snprintf() или запись 0 байт; иначе ошибка записи. */
+ * При -1 errno сохраняет ошибку log_event(). */
 static int log_barrier(const Process* process, const Logs* logs, const char* format) {
     char line[128];
     int length = snprintf(line, sizeof(line), format, (int)process->id);
-    if (length < 0 || (size_t)length >= sizeof(line)) {
-        errno = EIO;
-        return -1;
-    }
     return log_event(logs, line, (size_t)length);
 }
 
 /** Рассылает STARTED и ждёт остальных детей (вызывается только в ребёнке).
- * При -1 errno сохраняет ошибку подготовки сообщения, логов, IPC или протокола. */
+ * При -1 errno сохраняет ошибку логов, IPC или протокола. */
 static int synchronize_start(Process* process, const Logs* logs) {
     Message message;
     int length = snprintf(message.s_payload, sizeof(message.s_payload), log_started_fmt,
                           (int)process->id, (int)getpid(), (int)getppid());
-    if (prepare_message(&message, STARTED, length) < 0) {
-        return -1;
-    }
+    prepare_message(&message, STARTED, length);
     if (publish_message(process, logs, &message) < 0) {
         return -1;
     }
@@ -131,14 +118,12 @@ static int synchronize_start(Process* process, const Logs* logs) {
 }
 
 /** Рассылает DONE и ждёт остальных детей (вызывается только в ребёнке).
- * При -1 errno сохраняет ошибку подготовки сообщения, логов, IPC или протокола. */
+ * При -1 errno сохраняет ошибку логов, IPC или протокола. */
 static int synchronize_finish(Process* process, const Logs* logs) {
     Message message;
     int length = snprintf(message.s_payload, sizeof(message.s_payload), log_done_fmt,
                           (int)process->id);
-    if (prepare_message(&message, DONE, length) < 0) {
-        return -1;
-    }
+    prepare_message(&message, DONE, length);
     if (publish_message(process, logs, &message) < 0) {
         return -1;
     }

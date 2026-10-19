@@ -5,14 +5,13 @@
 #include <stdio.h>
 
 /** Передаёт вилку или маркер: 0 — отправлено, 1 — отложено.
- * При 1 errno: EAGAIN/EWOULDBLOCK или EPIPE в THINKING; при -1 — прочая ошибка send(). */
+ * При 1 errno: EAGAIN или EPIPE в THINKING; при -1 — прочая ошибка send(). */
 static int transfer_resource(Process* process, int peer, MessageType type) {
     Message message = { .s_header = {MESSAGE_MAGIC, 0, type, 0} };
     if (send(process, (local_id)peer, &message) == 0) {
         return 0;
     }
-    if (errno == EAGAIN || errno == EWOULDBLOCK
-        || (errno == EPIPE && process->philosopher.state == THINKING)) {
+    if (errno == EAGAIN || (errno == EPIPE && process->philosopher.state == THINKING)) {
         // Продолжаем приём: DONE закрывшегося соседа ещё может находиться в канале.
         return 1;
     }
@@ -93,12 +92,6 @@ int philosophers_service(Process* process) {
 }
 
 int philosophers_receive(Process* process, local_id sender, const Message* message) {
-    if (sender == PARENT_ID || process->id == PARENT_ID
-        || !process->philosopher.enabled || message->s_header.s_payload_len != 0) {
-        // EBADMSG: обмен разрешён между детьми, при --mutexl и пустом теле.
-        errno = EBADMSG;
-        return -1;
-    }
     ProcessPhilosopher* philosopher = &process->philosopher;
     MessageType type = (MessageType)message->s_header.s_type;
     if (type == CS_REQUEST && !philosopher->req[sender]) {
@@ -149,15 +142,10 @@ int release_cs(const void* self) {
 }
 
 /** Печатает строку итерации, защищая print() при --mutexl (вызывается только в ребёнке).
- * При -1 errno: EIO — ошибка/усечение snprintf(); иначе ошибка входа в КС или выхода из неё. */
+ * При -1 errno сохраняет ошибку входа в КС или выхода из неё. */
 static int print_iteration(Process* process, int iteration, int total) {
     char line[128];
-    int length = snprintf(line, sizeof(line), log_loop_operation_fmt,
-                          process->id, iteration, total);
-    if (length < 0 || (size_t)length >= sizeof(line)) {
-        errno = EIO;
-        return -1;
-    }
+    snprintf(line, sizeof(line), log_loop_operation_fmt, process->id, iteration, total);
 
     if (process->philosopher.enabled && request_cs(process) < 0) {
         return -1;

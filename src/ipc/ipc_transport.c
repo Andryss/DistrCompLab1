@@ -10,43 +10,19 @@ static int fail(int error) {
     return -1;
 }
 
-/** Проверяет, что адресат существует и отличается от текущего процесса. */
-static int valid_peer(const Process* process, local_id peer) {
-    return peer >= 0 && peer < process->count && peer != process->id;
-}
-
-/** Проверяет указатель, магическую подпись и допустимую длину тела. */
-static int valid_message(const Message* message) {
-    return message != NULL
-        && message->s_header.s_magic == MESSAGE_MAGIC
-        && message->s_header.s_payload_len <= MAX_PAYLOAD_LEN;
-}
-
-/** Атомарно отправляет сообщение в канал получателя.
- * При -1 errno: EINVAL — параметры/лимит, EMSGSIZE — размер, EIO — короткая запись; иначе ошибка fpathconf()/write(). */
+/** Отправляет кадр размером не больше PIPE_BUF одним неблокирующим write().
+ * При -1 errno: EIO — короткая запись; иначе ошибка write(). */
 int send(void* self, local_id dst, const Message* message) {
     Process* process = self;
-    if (!valid_peer(process, dst) || !valid_message(message)) {
-        return fail(EINVAL);
-    }
     size_t size = sizeof(MessageHeader) + message->s_header.s_payload_len;
     int descriptor = process->ipc.descriptors[process->id][dst][PIPE_WRITE];
-    // Отличаем ошибку fpathconf() от неопределённого PIPE_BUF (его считаем EINVAL).
-    errno = 0;
-    long limit = fpathconf(descriptor, _PC_PIPE_BUF);
-    if (limit < 0) {
-        return fail(errno != 0 ? errno : EINVAL);
-    }
-    if (size > (size_t)limit) {
-        return fail(EMSGSIZE);
-    }
 
     ssize_t written;
     do {
         written = write(descriptor, message, size);
     } while (written < 0 && errno == EINTR);
     if (written < 0) {
-        // EAGAIN/EWOULDBLOCK — места нет, отправку можно повторить; EPIPE — нет читателя.
+        // EAGAIN — места нет, отправку можно повторить; EPIPE — нет читателя.
         return -1;
     }
     if ((size_t)written != size) {
@@ -57,12 +33,9 @@ int send(void* self, local_id dst, const Message* message) {
 }
 
 /** Рассылает сообщение всем другим процессам; частичную рассылку целиком не повторяют.
- * При -1 errno: EINVAL — неверный кадр; иначе первая ошибка send(). */
+ * При -1 errno сохраняет первую ошибку send(). */
 int send_multicast(void* self, const Message* message) {
     Process* process = self;
-    if (!valid_message(message)) {
-        return fail(EINVAL);
-    }
 
     for (int destination = 0; destination < process->count; ++destination) {
         if (destination == process->id) {
@@ -76,7 +49,7 @@ int send_multicast(void* self, const Message* message) {
 }
 
 /** Дочитывает начатый кадр до нужного размера.
- * При -1 errno: EAGAIN/EWOULDBLOCK — пусто до первого байта, EPIPE — EOF между кадрами, EBADMSG — EOF внутри; иначе ошибка read(). */
+ * При -1 errno: EAGAIN — пусто до первого байта, EPIPE — EOF между кадрами, EBADMSG — EOF внутри; иначе ошибка read(). */
 static int read_bytes(int* descriptor, Message* message, size_t* used, size_t target) {
     unsigned char* buffer = (unsigned char*)message;
     while (*used < target) {
@@ -96,7 +69,7 @@ static int read_bytes(int* descriptor, Message* message, size_t* used, size_t ta
         if (errno == EINTR) {
             continue;
         }
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno == EAGAIN) {
             if (*used == 0) {
                 return -1;
             }
@@ -122,32 +95,25 @@ static int read_frame(Process* process, int sender, Message* message) {
     if (result < 0) {
         return result;
     }
-    if (!valid_message(message)) {
+    if (message->s_header.s_magic != MESSAGE_MAGIC || message->s_header.s_payload_len > MAX_PAYLOAD_LEN) {
         return fail(EBADMSG);
     }
     return read_bytes(descriptor, message, &used, sizeof(MessageHeader) + message->s_header.s_payload_len);
 }
 
 /** Принимает сообщение от указанного отправителя.
- * При -1 errno: EINVAL — from/NULL, EAGAIN/EWOULDBLOCK — пусто, EPIPE — вход закрыт, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
+ * При -1 errno: EAGAIN — пусто, EPIPE — вход закрыт, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
 int receive(void* self, local_id from, Message* message) {
     Process* process = self;
-    if (!valid_peer(process, from) || message == NULL) {
-        return fail(EINVAL);
-    }
-
     return read_frame(process, from, message);
 }
 
 /** Принимает сообщение круговым обходом, сохраняя отправителя сообщения/ошибки в ReceiveContext.
- * При -1 errno: EAGAIN — все входы пусты, EINVAL — NULL, EPIPE — закрыт вход или все входы, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
+ * При -1 errno: EAGAIN — все входы пусты, EPIPE — закрыт вход или все входы, EBADMSG — повреждённый/оборванный кадр; иначе ошибка read(). */
 int receive_any(void* self, Message* message) {
     Process* process = self;
     ReceiveContext* context = &process->ipc.receive;
     context->sender = -1;
-    if (message == NULL) {
-        return fail(EINVAL);
-    }
 
     int open_channels = 0;
     for (int step = 0; step < process->count; ++step) {
@@ -158,7 +124,7 @@ int receive_any(void* self, Message* message) {
 
         ++open_channels;
         int result = read_frame(process, sender, message);
-        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (result < 0 && errno == EAGAIN) {
             continue;
         }
         context->sender = (local_id)sender;

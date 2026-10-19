@@ -88,10 +88,5 @@ int log_channel(const Logs* logs, int source, int destination, int read_fd, int 
     char line[128];
     int length = snprintf(line, sizeof(line), "Pipe %d -> %d: read=%d write=%d\n",
                           source, destination, read_fd, write_fd);
-    if (length < 0 || (size_t)length >= sizeof(line)) {
-        errno = EIO;
-        return -1;
-    }
-
     return io_write_all(logs->pipes_fd, line, (size_t)length);
 }

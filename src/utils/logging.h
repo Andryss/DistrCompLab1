@@ -29,7 +29,7 @@ int logs_close(Logs* logs);
 int log_event(const Logs* logs, const char* text, size_t length);
 
 /** Записывает канал в лог топологии (вызывается только в родителе).
- * При -1 errno: EIO — ошибка/усечение snprintf() или запись 0 байт; иначе ошибка write(). */
+ * При -1 errno: EIO — запись 0 байт; иначе ошибка write(). */
 int log_channel(const Logs* logs, int source, int destination, int read_fd, int write_fd);
 
 #endif // DISTR_LOGGING_H

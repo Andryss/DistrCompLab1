@@ -13,8 +13,8 @@ void philosophers_initialize(Process* process);
  * При -1 errno сохраняет ошибку send(). */
 int philosophers_service(Process* process);
 
-/** Обновляет состояние по сообщению от другого процесса с sender в пределах [0, count).
- * При -1 errno = EBADMSG: неверный участник, тело, тип или повторная передача ресурса. */
+/** Принимает вилку или маркер от соседа (вызывается только в ребёнке с --mutexl).
+ * При -1 errno = EBADMSG: неизвестный тип или повторная передача ресурса. */
 int philosophers_receive(Process* process, local_id sender, const Message* message);
 
 /** Проверяет наличие всех нужных вилок и отсутствие пар «грязная вилка + маркер». */
@@ -29,7 +29,7 @@ int request_cs(const void* self);
 int release_cs(const void* self);
 
 /** Выполняет 5 × ID вызовов print() (вызывается только в ребёнке).
- * При -1 errno: EIO — ошибка/усечение snprintf(); иначе ошибка IPC или протокола. */
+ * При -1 errno сохраняет ошибку IPC или протокола. */
 int perform_work(Process* process);
 
 #endif // DISTR_PHILOSOPHERS_H

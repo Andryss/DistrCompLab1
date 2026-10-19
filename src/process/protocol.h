@@ -8,7 +8,7 @@
 #include "logging.h"
 
 /** Обрабатывает доступный кадр и запросы (вызывается в родителе и детях).
- * При -1 errno: EPIPE — закрытие до DONE ребёнка, EBADMSG — нарушение протокола; иначе ошибка IPC; EAGAIN/EWOULDBLOCK допустимы. */
+ * При -1 errno: EPIPE — закрытие до DONE ребёнка, EBADMSG — нарушение протокола; иначе ошибка IPC; EAGAIN допустим. */
 int protocol_step(Process* process);
 
 /** Ожидает STARTED/DONE от всех других детей.
